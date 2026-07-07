@@ -23,9 +23,15 @@ void run_benchmark_for_size(int n_samples) {
 #endif
     printf("====================================================\n");
 
-    // 0MB 다이어트 버퍼 안전 할당
+    // [최적화 - 0MB 다이어트 버퍼 안전 할당]
     float *cust_cube_r = (float *)malloc(total_elements * sizeof(float));
     float *cust_cube_i = (float *)malloc(total_elements * sizeof(float));
+
+    // 🔥 [핵심 최적화: Zero-Allocation] 
+    // 기존에 execute_custom_pipeline 내부에서 매 프레임 malloc/free되던 
+    // 전치(Transpose)용 거대 임시 버퍼를 벤치마크 시작 시 딱 한 번만 미리 할당합니다.
+    float *pipeline_tmp_r = (float *)malloc(total_elements * sizeof(float));
+    float *pipeline_tmp_i = (float *)malloc(total_elements * sizeof(float));
 
     fftwf_complex *fftw_cube_in  = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
     fftwf_complex *fftw_cube_out = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
@@ -37,7 +43,6 @@ void run_benchmark_for_size(int n_samples) {
     double true_a[] = {-15.0, 25.0,   0.0}; 
     int num_targets = 3;
 
-    // 🎯 [안전 장치] 헤더 파일 오염을 무시하고 무조건 ESTIMATE 강제 구동 (혼종 버그 차단)
     // 🎯 [플래그 동기화] 컴파일 매크로에 따라 FFTW3의 극한 계측 모드를 정확히 바인딩합니다.
     unsigned int fftw_flags = FFTW_ESTIMATE;
 #if defined(FFTW_MODE_MEASURE)
@@ -46,7 +51,7 @@ void run_benchmark_for_size(int n_samples) {
     fftw_flags = FFTW_PATIENT;
 #endif
 
-    // 가상 전파 위상 룩업 테이블(LUT)
+    // 가상 전파 위상 룩업 테이블(LUT) 생성
     float *lut_r = (float *)malloc(total_elements * sizeof(float));
     float *lut_i = (float *)malloc(total_elements * sizeof(float));
 
@@ -71,7 +76,7 @@ void run_benchmark_for_size(int n_samples) {
         }
     }
 
-    // 🎯 [핵심 패치] 스레드 충돌을 막기 위해 1D 마스터 플랜을 루프 바깥에서 단 1번만 생성합니다!
+    // 🎯 [핵심 패치] 스레드 충돌을 막기 위해 1D 마스터 플랜을 루프 바깥에서 단 1번만 생성합니다.
     fftwf_plan p_range = fftwf_plan_dft_1d(n_samples, fftw_cube_in, fftw_cube_in, FFTW_FORWARD, fftw_flags);
 
     double start_inline = get_current_time_ms();
@@ -95,7 +100,7 @@ void run_benchmark_for_size(int n_samples) {
             if (n_samples == 1024) custom_fft_1024_fixed(&cust_cube_r[offset], &cust_cube_i[offset]);
             else                   custom_fft_2048_fixed(&cust_cube_r[offset], &cust_cube_i[offset]);
 
-            // 🎯 [핵심 패치] 루프 안에서는 플랜 생성 없이 배열 포인터만 던져서 안전하게 실행(Execute)만 수행합니다.
+            // 루프 안에서는 플랜 생성 없이 배열 포인터만 던져서 안전하게 실행(Execute)만 수행합니다.
             fftwf_execute_dft(p_range, &fftw_cube_in[offset], &fftw_cube_in[offset]);
         }
     }
@@ -105,16 +110,19 @@ void run_benchmark_for_size(int n_samples) {
     fftwf_destroy_plan(p_range);
 
     // ----------------------------------------------------
-    // 후처리 2D 레이스 구동
+    // 후처리 2D 레이스 구동 (Custom vs FFTW3)
     // ----------------------------------------------------
     double start_cust = get_current_time_ms();
-    execute_custom_pipeline(cust_cube_r, cust_cube_i, n_samples);
+    
+    // 🔥 [최적화 반영] 새로 설계한 5인자 함수 포맷에 맞춰 미리 할당해 둔 임시 버퍼 포인터들을 주입합니다.
+    execute_custom_pipeline(cust_cube_r, cust_cube_i, pipeline_tmp_r, pipeline_tmp_i, n_samples);
+    
     double custom_post_ms = get_current_time_ms() - start_cust;
 
     int d_rank = 1; int d_n[] = {N_CHIRPS}; int d_howmany = N_ANTENNAS * n_samples;
     int d_idist = N_CHIRPS, d_odist = N_CHIRPS; int d_istride = 1, d_ostride = 1;
     
-    // Doppler 플랜 생성은 어차피 루프 밖이므로 스레드 충돌 없이 안전합니다.
+    // Doppler 플랜 생성
     fftwf_plan p_doppler = fftwf_plan_many_dft(d_rank, d_n, d_howmany, fftw_cube_in, NULL, d_istride, d_idist, fftw_cube_out, NULL, d_ostride, d_odist, FFTW_FORWARD, fftw_flags);
     
     double start_fftw = get_current_time_ms();
@@ -123,11 +131,13 @@ void run_benchmark_for_size(int n_samples) {
     fftwf_destroy_plan(p_doppler);
 
     // ----------------------------------------------------
-    // 🎯 [선택적 Angle-FFT 탐색]
+    // 🎯 [선택적 Angle-FFT 탐색 및 검증]
     // ----------------------------------------------------
-    printf("\n 🎯 [물리 값 정밀 검증 결과] (0MB 3D 다이어트 & 64 가속 성공)\n");
+    printf("\n 🎯 [물리 값 정밀 검증 결과] (Zero-Allocation & Loop Fusion 적용 완료)\n");
     printf(" -------------------------------------------------------------------------\n");
     
+    // 💡 주의: execute_custom_pipeline의 결과가 pipeline_tmp에 전치되어 남아있으므로,
+    // 정밀 검증 단계에서는 포맷이 뒤집힌 [ant][r][chirp] 구조인 pipeline_tmp 버퍼를 직접 탐색합니다.
     for (int t_idx = 0; t_idx < num_targets; t_idx++) {
         float max_2d_mag = -1.0f;
         int best_r = 0, best_chirp = 0;
@@ -141,7 +151,8 @@ void run_benchmark_for_size(int n_samples) {
                 float sum_mag = 0.0f;
                 for (int ant = 0; ant < N_ANTENNAS; ant++) {
                     int idx = ant * (n_samples * N_CHIRPS) + r * N_CHIRPS + ch;
-                    sum_mag += cust_cube_r[idx]*cust_cube_r[idx] + cust_cube_i[idx]*cust_cube_i[idx];
+                    // 최적화된 내부 버퍼에서 피크값 탐색
+                    sum_mag += pipeline_tmp_r[idx]*pipeline_tmp_r[idx] + pipeline_tmp_i[idx]*pipeline_tmp_i[idx];
                 }
                 if (sum_mag > max_2d_mag) {
                     max_2d_mag = sum_mag; best_r = r; best_chirp = ch;
@@ -155,8 +166,8 @@ void run_benchmark_for_size(int n_samples) {
         for (int ant = 0; ant < N_ANTENNAS; ant++) {
             int idx = ant * (n_samples * N_CHIRPS) + best_r * N_CHIRPS + best_chirp;
             if (idx >= 0 && idx < total_elements) {
-                ang_r[ant] = cust_cube_r[idx]; 
-                ang_i[ant] = cust_cube_i[idx];
+                ang_r[ant] = pipeline_tmp_r[idx]; 
+                ang_i[ant] = pipeline_tmp_i[idx];
             }
         }
         
@@ -193,7 +204,9 @@ void run_benchmark_for_size(int n_samples) {
     printf("  🚀 [결과] Custom 지연 (2D+선택 64) : %6.2f ms / Frame (🔥 0MB 다이어트 완성)\n", custom_post_ms);
     printf("  =========================================================================\n\n");
 
+    // 메모리 해제
     free(cust_cube_r); free(cust_cube_i);
+    free(pipeline_tmp_r); free(pipeline_tmp_i); // 🔥 루프 밖에서 딱 1번만 안전하게 해제
     free(lut_r); free(lut_i);
     fftwf_free(fftw_cube_in); fftwf_free(fftw_cube_out);
 }
