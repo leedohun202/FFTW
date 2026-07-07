@@ -8,6 +8,7 @@
  */
 void custom_fft_256_fixed(float *__restrict__ real, float *__restrict__ imag) {
     
+    // 1. Bit-Reversal
     for (int i = 0; i < 256; i++) { 
         int j = bitrev_256[i]; 
         if (i < j) { 
@@ -16,6 +17,7 @@ void custom_fft_256_fixed(float *__restrict__ real, float *__restrict__ imag) {
         } 
     }
 
+    // 2. Butterfly 연산
     for (int step = 1; step < 256; step *= 2) { 
         const int jump = step * 2; 
         const int twiddle_step = 256 / jump;
@@ -23,38 +25,48 @@ void custom_fft_256_fixed(float *__restrict__ real, float *__restrict__ imag) {
         if (step < 4) { 
             for (int i = 0; i < 256; i += jump) { 
                 for (int j = 0; j < step; j++) { 
-                    int curr = i + j; int k = curr + step; 
+                    int curr = i + j; 
+                    int k = curr + step; 
+                    
                     float tr = twiddle_real_256[j * twiddle_step]; 
                     float ti = twiddle_imag_256[j * twiddle_step]; 
+                    
                     float t_real = real[k] * tr - imag[k] * ti; 
                     float t_imag = real[k] * ti + imag[k] * tr; 
-                    real[k] = real[curr] - t_real; imag[k] = imag[curr] - t_imag; 
-                    real[curr] = real[curr] + t_real; imag[curr] = imag[curr] + t_imag; 
+                    
+                    real[k] = real[curr] - t_real; 
+                    imag[k] = imag[curr] - t_imag; 
+                    real[curr] = real[curr] + t_real; 
+                    imag[curr] = imag[curr] + t_imag; 
                 } 
             } 
         } else { 
             for (int i = 0; i < 256; i += jump) {
 #ifdef __aarch64__
                 for (int j = 0; j < step; j += 4) { 
-                    int curr = i + j; int k = curr + step; 
+                    int curr = i + j; 
+                    int k = curr + step; 
                     
                     float32x4_t vr_curr = vld1q_f32(&real[curr]); 
                     float32x4_t vi_curr = vld1q_f32(&imag[curr]); 
                     float32x4_t vr_k = vld1q_f32(&real[k]); 
                     float32x4_t vi_k = vld1q_f32(&imag[k]); 
                     
-                    // 🔥 레지스터 직결 로드 패킹
-                    float32x4_t v_tr = vdupq_n_f32(0.0f);
-                    v_tr = vsetq_lane_f32(twiddle_real_256[(j+0)*twiddle_step], v_tr, 0);
-                    v_tr = vsetq_lane_f32(twiddle_real_256[(j+1)*twiddle_step], v_tr, 1);
-                    v_tr = vsetq_lane_f32(twiddle_real_256[(j+2)*twiddle_step], v_tr, 2);
-                    v_tr = vsetq_lane_f32(twiddle_real_256[(j+3)*twiddle_step], v_tr, 3);
+                    float tr_arr[4] = { 
+                        twiddle_real_256[(j+0)*twiddle_step], 
+                        twiddle_real_256[(j+1)*twiddle_step], 
+                        twiddle_real_256[(j+2)*twiddle_step], 
+                        twiddle_real_256[(j+3)*twiddle_step] 
+                    }; 
+                    float ti_arr[4] = { 
+                        twiddle_imag_256[(j+0)*twiddle_step], 
+                        twiddle_imag_256[(j+1)*twiddle_step], 
+                        twiddle_imag_256[(j+2)*twiddle_step], 
+                        twiddle_imag_256[(j+3)*twiddle_step] 
+                    }; 
                     
-                    float32x4_t v_ti = vdupq_n_f32(0.0f);
-                    v_ti = vsetq_lane_f32(twiddle_imag_256[(j+0)*twiddle_step], v_ti, 0);
-                    v_ti = vsetq_lane_f32(twiddle_imag_256[(j+1)*twiddle_step], v_ti, 1);
-                    v_ti = vsetq_lane_f32(twiddle_imag_256[(j+2)*twiddle_step], v_ti, 2);
-                    v_ti = vsetq_lane_f32(twiddle_imag_256[(j+3)*twiddle_step], v_ti, 3);
+                    float32x4_t v_tr = vld1q_f32(tr_arr); 
+                    float32x4_t v_ti = vld1q_f32(ti_arr); 
                     
                     float32x4_t vt_real = vsubq_f32(vmulq_f32(vr_k, v_tr), vmulq_f32(vi_k, v_ti)); 
                     float32x4_t vt_imag = vaddq_f32(vmulq_f32(vr_k, v_ti), vmulq_f32(vi_k, v_tr)); 
@@ -66,11 +78,19 @@ void custom_fft_256_fixed(float *__restrict__ real, float *__restrict__ imag) {
                 }
 #else
                 for (int j = 0; j < step; j++) { 
-                    int curr = i + j; int k = curr + step; 
-                    float tr = twiddle_real_256[j * twiddle_step]; float ti = twiddle_imag_256[j * twiddle_step]; 
-                    float t_real = real[k] * tr - imag[k] * ti; float t_imag = real[k] * ti + imag[k] * tr; 
-                    real[k] = real[curr] - t_real; imag[k] = imag[curr] - t_imag; 
-                    real[curr] = real[curr] + t_real; imag[curr] = imag[curr] + t_imag; 
+                    int curr = i + j; 
+                    int k = curr + step; 
+                    
+                    float tr = twiddle_real_256[j * twiddle_step]; 
+                    float ti = twiddle_imag_256[j * twiddle_step]; 
+                    
+                    float t_real = real[k] * tr - imag[k] * ti; 
+                    float t_imag = real[k] * ti + imag[k] * tr; 
+                    
+                    real[k] = real[curr] - t_real; 
+                    imag[k] = imag[curr] - t_imag; 
+                    real[curr] = real[curr] + t_real; 
+                    imag[curr] = imag[curr] + t_imag; 
                 }
 #endif
             } 

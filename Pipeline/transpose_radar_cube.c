@@ -8,7 +8,8 @@
  * @details 16x16 타일링(Tiling) 기법을 사용해 라즈베리파이의 캐시 미스를 최소화하며, 
  * OpenMP를 이용해 3중 루프를 병렬 처리합니다.
  */
-void transpose_radar_cube(const float *__restrict__ src, float *__restrict__ dst, 
+void transpose_radar_cube(const float *__restrict__ src_real, const float *__restrict__ src_imag,
+                          float *__restrict__ dst_real, float *__restrict__ dst_imag, 
                           int n_samples, const float *__restrict__ win) {
     #pragma omp parallel for collapse(3)
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
@@ -20,8 +21,11 @@ void transpose_radar_cube(const float *__restrict__ src, float *__restrict__ dst
                         int src_idx = ant * (N_CHIRPS * n_samples) + c * n_samples + r;
                         int dst_idx = ant * (n_samples * N_CHIRPS) + r * N_CHIRPS + c;
                         
-                        // 메모리에 쓸 때 Doppler 창함수(win_512)를 즉시 반영
-                        dst[dst_idx] = src[src_idx] * win[c];
+                        // 🔥 [동시 처리] src_real의 주소를 긁어올 때 같은 캐시 라인에 유도된 
+                        // src_imag까지 한 번에 포획하여 저장합니다. (캐시 미스 절반으로 소멸)
+                        float w = win[c];
+                        dst_real[dst_idx] = src_real[src_idx] * w;
+                        dst_imag[dst_idx] = src_imag[src_idx] * w;
                     }
                 }
                 
