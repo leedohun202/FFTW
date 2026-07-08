@@ -10,19 +10,20 @@
  */
 void transpose_radar_cube(const float *__restrict__ src_real, const float *__restrict__ src_imag,
                           float *__restrict__ dst_real, float *__restrict__ dst_imag, 
-                          int n_samples, const float *__restrict__ win) {
+                          int n_samples, int n_chirps, const float *__restrict__ win) {
     #pragma omp parallel for collapse(3)
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
-        for (int c_blk = 0; c_blk < N_CHIRPS; c_blk += TILE_SIZE) {
+        for (int c_blk = 0; c_blk < n_chirps; c_blk += TILE_SIZE) {
             for (int r_blk = 0; r_blk < n_samples; r_blk += TILE_SIZE) {
                 
                 for (int c = c_blk; c < c_blk + TILE_SIZE; c++) {
+                    if (c >= n_chirps) break;
                     for (int r = r_blk; r < r_blk + TILE_SIZE; r++) {
-                        int src_idx = ant * (N_CHIRPS * n_samples) + c * n_samples + r;
-                        int dst_idx = ant * (n_samples * N_CHIRPS) + r * N_CHIRPS + c;
+                        if (r >= n_samples) break;
                         
-                        // 🔥 [동시 처리] src_real의 주소를 긁어올 때 같은 캐시 라인에 유도된 
-                        // src_imag까지 한 번에 포획하여 저장합니다. (캐시 미스 절반으로 소멸)
+                        int src_idx = ant * (n_chirps * n_samples) + c * n_samples + r;
+                        int dst_idx = ant * (n_samples * n_chirps) + r * n_chirps + c;
+                        
                         float w = win[c];
                         dst_real[dst_idx] = src_real[src_idx] * w;
                         dst_imag[dst_idx] = src_imag[src_idx] * w;

@@ -6,21 +6,23 @@
 #include <fftw3.h>
 
 /**
- * @brief 3D 레이더 큐브 메모리 전치 및 창함수 통합 가속 Kernel (Loop Fusion)
- * @param win 창함수 배열 포인터 추가 (N_CHIRPS 크기)
+ * @brief 3D 레이더 큐브 실수/허수 동시 전치 및 가변 처프 창함수 통합 가속 Kernel
  */
 void transpose_radar_cube(const float *__restrict__ src_real, const float *__restrict__ src_imag,
                           float *__restrict__ dst_real, float *__restrict__ dst_imag, 
-                          int n_samples, const float *__restrict__ win);
+                          int n_samples, int n_chirps, const float *__restrict__ win);
+
 /**
- * @brief Zero-Allocation 및 최적화된 2D Doppler FFT 파이프라인
- * @param tmp_real 외부에서 1회만 할당된 전치용 임시 실수부 버퍼
- * @param tmp_imag 외부에서 1회만 할당된 전치용 임시 허수부 버퍼
+ * @brief 최적화된 Zero-Allocation 가변 2D Doppler FFT 파이프라인 집행 커널
+ * @param n_chirps 현재 세션의 처프 개수 (256 또는 512)
  */
 void execute_custom_pipeline(float *__restrict__ cube_real, float *__restrict__ cube_imag, 
                              float *__restrict__ tmp_real, float *__restrict__ tmp_imag, 
-                             int n_samples);
+                             int n_samples, int n_chirps);
 
+/**
+ * @brief 대조군 FFTW3 전용 최적화 2D Doppler FFT 파이프라인
+ */
 void execute_fftw_pipeline_optimized(fftwf_complex *cube_in, fftwf_complex *cube_out, 
                                      fftwf_plan p_doppler, int n_samples);
 
