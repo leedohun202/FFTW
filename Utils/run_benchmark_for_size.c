@@ -12,7 +12,9 @@
 
 void run_benchmark_for_size(int n_samples) {
     int total_elements = N_ANTENNAS * N_CHIRPS * n_samples;
-    
+    size_t alloc_size = total_elements * sizeof(float);
+    size_t alignment = 64; // 🔥 ARM Cortex-A76 캐시 라인 크기 (64-byte)
+
     printf("\n====================================================\n");
 #if defined(FFTW_MODE_ESTIMATE)
     printf(" 🛰️ [3D 궁극의 가속 엔진] Range = %d | ⚡ ESTIMATE 모드\n", n_samples);
@@ -25,11 +27,19 @@ void run_benchmark_for_size(int n_samples) {
 
     int ram_start_kb = get_current_ram_usage_kb();
 
-    float *cust_cube_r = (float *)malloc(total_elements * sizeof(float));
-    float *cust_cube_i = (float *)malloc(total_elements * sizeof(float));
-    float *pipeline_tmp_r = (float *)malloc(total_elements * sizeof(float));
-    float *pipeline_tmp_i = (float *)malloc(total_elements * sizeof(float));
+    // 🎯 [캐시 얼라인먼트 적용 할당]
+    // malloc 대신 posix_memalign을 사용하여 시작 주소를 64바이트 경계에 완벽히 정렬합니다.
+    float *cust_cube_r = NULL;
+    float *cust_cube_i = NULL;
+    float *pipeline_tmp_r = NULL;
+    float *pipeline_tmp_i = NULL;
+    
+    if (posix_memalign((void**)&cust_cube_r, alignment, alloc_size) != 0) return;
+    if (posix_memalign((void**)&cust_cube_i, alignment, alloc_size) != 0) return;
+    if (posix_memalign((void**)&pipeline_tmp_r, alignment, alloc_size) != 0) return;
+    if (posix_memalign((void**)&pipeline_tmp_i, alignment, alloc_size) != 0) return;
 
+    // 대조군 FFTW3 전용 얼라인먼트 할당 (fftw_malloc은 자체적으로 하드웨어 정렬을 수행함)
     fftwf_complex *fftw_cube_in  = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
     fftwf_complex *fftw_cube_out = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
     memset(fftw_cube_in, 0, total_elements * sizeof(fftwf_complex));
@@ -47,8 +57,10 @@ void run_benchmark_for_size(int n_samples) {
     fftw_flags = FFTW_PATIENT;
 #endif
 
-    float *lut_r = (float *)malloc(total_elements * sizeof(float));
-    float *lut_i = (float *)malloc(total_elements * sizeof(float));
+    float *lut_r = NULL;
+    float *lut_i = NULL;
+    if (posix_memalign((void**)&lut_r, alignment, alloc_size) != 0) return;
+    if (posix_memalign((void**)&lut_i, alignment, alloc_size) != 0) return;
 
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int chirp = 0; chirp < N_CHIRPS; chirp++) {
@@ -71,7 +83,7 @@ void run_benchmark_for_size(int n_samples) {
         }
     }
 
-    // [Custom] 1D Range-FFT
+    // [Custom] 1D Range-FFT (정렬된 메모리 덕분에 NEON 스트리밍 속도 향상 기대)
     double start_cust_range = get_current_time_ms();
     #pragma omp parallel for collapse(2)
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
@@ -165,7 +177,8 @@ void run_benchmark_for_size(int n_samples) {
         double a_omega = (best_a >= N_ANGLE / 2) ? (2.0 * M_PI * (best_a - N_ANGLE) / N_ANGLE) : (2.0 * M_PI * best_a / N_ANGLE);
         double sin_val = (a_omega * lambda_c) / (2.0 * M_PI * d_ant);
         
-        if (sin_val > 1.0)  sin_val = 1.0; if (sin_val < -1.0) sin_val = -1.0;
+        if (sin_val > 1.0)  sin_val = 1.0; 
+        if (sin_val < -1.0) sin_val = -1.0;
         double est_Angle = asin(sin_val) * 180.0 / M_PI;
 
         double r_err = fabs(est_Range - true_R[t_idx]) / true_R[t_idx] * 100.0;
@@ -180,7 +193,7 @@ void run_benchmark_for_size(int n_samples) {
     double current_session_ram_mb = (ram_end_kb - ram_start_kb) / 1024.0;
     if (current_session_ram_mb < 0) current_session_ram_mb = 0.0;
 
-    printf(" 📊 [3D 궁극 가속 배틀 레포트 (세부 프로파일링 복구 버전)]\n");
+    printf(" 📊 [3D 궁극 가속 배틀 레포트 (캐시 얼라인먼트 패치 버전)]\n");
     printf("  =========================================================================\n");
     printf("  ▪️ [Custom] 1D Range-FFT 인라인 타임    : %6.2f ms\n", cust_range_ms);
     printf("  ▪️ [Custom] 2D Doppler-FFT 파이프라인   : %6.2f ms\n", cust_doppler_ms);
