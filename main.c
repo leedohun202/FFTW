@@ -13,7 +13,12 @@
  */
 int main() {
     // 🎯 [Wisdom 격리] 최적화 설계도 로드 (오직 PATIENT 모드에서만 허용)
-#if defined(FFTW_MODE_PATIENT)
+
+    // 1. 시스템 초기화
+    fftwf_init_threads();
+    fftwf_plan_with_nthreads(4);
+    
+    #if defined(FFTW_MODE_PATIENT)
     FILE *w_file_in = fopen("radar_wisdom.wisdom", "r");
     if (w_file_in != NULL) {
         if (fftwf_import_wisdom_from_file(w_file_in)) {
@@ -25,11 +30,6 @@ int main() {
         printf("    (수십 분의 극한 시뮬레이션이 진행될 수 있습니다...)\n");
     }
 #endif
-
-    // 1. 시스템 초기화
-    fftwf_init_threads();
-    fftwf_plan_with_nthreads(4);
-    
     // 사전 연산 테이블(LUT) 생성
     init_resources();
     
