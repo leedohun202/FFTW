@@ -1,17 +1,18 @@
 #include "radar_config.h"
+#include "radar_utils.h"
+#include "radar_fft.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/time.h>
 #include <fftw3.h>
 
-// (다른 유틸 함수들이 있다면 이어서 작성...)
-
-void profile_individual_operation(int size, void (*custom_func)(float*, float*)) {
-    float *r = (float*)calloc(size, sizeof(float));
-    float *i = (float*)calloc(size, sizeof(float));
+// ---------------------------------------------------------
+// [0] FFTW3 단독 프로파일러 (기준 속도 측정 및 반환)
+// ---------------------------------------------------------
+double profile_fftw_operation(int size) {
     fftwf_complex *f_in = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * size);
     
-    // 🎯 [패치 1] 무식한 PATIENT 하드코딩 제거 및 전역 매크로 동기화
     unsigned int fftw_flags = FFTW_ESTIMATE;
 #if defined(FFTW_MODE_MEASURE)
     fftw_flags = FFTW_MEASURE;
@@ -21,9 +22,8 @@ void profile_individual_operation(int size, void (*custom_func)(float*, float*))
 
     fftwf_plan p = fftwf_plan_dft_1d(size, f_in, f_in, FFTW_FORWARD, fftw_flags);
     
-    // 🎯 [패치 2] Wisdom 백업 로직을 PATIENT 모드 전용으로 철저히 격리
 #if defined(FFTW_MODE_PATIENT)
-    FILE *wf = fopen("radar_wisdom.wisdom", "w"); // 또는 FFTW_WISDOM_FILE 매크로 사용
+    FILE *wf = fopen("radar_wisdom.wisdom", "w");
     if (wf != NULL) {
         fftwf_export_wisdom_to_file(wf);
         fclose(wf);
@@ -33,15 +33,109 @@ void profile_individual_operation(int size, void (*custom_func)(float*, float*))
     const int iterations = 1000; struct timeval start, end;
     
     gettimeofday(&start, NULL);
-    for(int k=0; k<iterations; k++) custom_func(r, i);
-    gettimeofday(&end, NULL);
-    double custom_us = ((end.tv_sec - start.tv_sec) * 1000000.0 + (end.tv_usec - start.tv_usec)) / iterations;
-
-    gettimeofday(&start, NULL);
     for(int k=0; k<iterations; k++) fftwf_execute(p);
     gettimeofday(&end, NULL);
     double fftw_us = ((end.tv_sec - start.tv_sec) * 1000000.0 + (end.tv_usec - start.tv_usec)) / iterations;
 
-    printf("  🔹 %4d 포인트 1D FFT 연산 -> [Custom]: %7.2f µs  |  [FFTW3]: %7.2f µs (비율: %.2fx)\n", size, custom_us, fftw_us, custom_us / fftw_us);
-    fftwf_destroy_plan(p); free(r); free(i); fftwf_free(f_in);
+    printf("  🔹 %4d 포인트 [%-13s] -> 기준 속도: %7.2f µs\n", size, "FFTW3 Baseline", fftw_us);
+    
+    fftwf_destroy_plan(p); 
+    fftwf_free(f_in);
+    
+    return fftw_us;
+}
+
+// ---------------------------------------------------------
+// [1] Float 커널 전용 프로파일러
+// ---------------------------------------------------------
+void profile_float_operation(int size, const char* name, void (*custom_func)(float*, float*), double fftw_us) {
+    float *r = NULL, *i = NULL;
+    posix_memalign((void**)&r, 64, size * sizeof(float));
+    posix_memalign((void**)&i, 64, size * sizeof(float));
+
+    const int iterations = 1000; struct timeval start, end;
+    
+    gettimeofday(&start, NULL);
+    for(int k=0; k<iterations; k++) custom_func(r, i);
+    gettimeofday(&end, NULL);
+    double custom_us = ((end.tv_sec - start.tv_sec) * 1000000.0 + (end.tv_usec - start.tv_usec)) / iterations;
+
+    printf("  🔸 %4d 포인트 [%-13s] -> Custom: %7.2f µs (FFTW3 대비 %5.2fx)\n", 
+           size, name, custom_us, custom_us / fftw_us);
+    
+    free(r); free(i);
+}
+
+// ---------------------------------------------------------
+// [2] Int16 Q15 커널 전용 프로파일러 (+8 패딩 가드룸 장착)
+// ---------------------------------------------------------
+void profile_int16_operation(int size, const char* name, void (*custom_func)(int16_t*, int16_t*), double fftw_us) {
+    int16_t *r = NULL, *i = NULL;
+    posix_memalign((void**)&r, 64, (size + 8) * sizeof(int16_t));
+    posix_memalign((void**)&i, 64, (size + 8) * sizeof(int16_t));
+    
+    const int iterations = 1000; struct timeval start, end;
+    
+    gettimeofday(&start, NULL);
+    for(int k=0; k<iterations; k++) custom_func(r, i);
+    gettimeofday(&end, NULL);
+    double custom_us = ((end.tv_sec - start.tv_sec) * 1000000.0 + (end.tv_usec - start.tv_usec)) / iterations;
+
+    printf("  🔸 %4d 포인트 [%-13s] -> Custom: %7.2f µs (FFTW3 대비 %5.2fx)\n", 
+           size, name, custom_us, custom_us / fftw_us);
+    
+    free(r); free(i);
+}
+
+// ---------------------------------------------------------
+// [3] 마이크로초 벤치마크 런처 (정확한 함수명 매핑 완료!)
+// ---------------------------------------------------------
+void run_individual_operation_benchmark(void) {
+    printf("\n====================================================\n");
+    printf(" [PART 4] 1D FFT 개별 연산 실행 속도 비교 (마이크로초 단위)\n");
+    printf("====================================================\n");
+    
+    double ref_us;
+
+    // 2048 포인트
+    ref_us = profile_fftw_operation(2048);
+    profile_float_operation(2048, "Float Radix-2", custom_fft_2048_fixed, ref_us);
+    profile_float_operation(2048, "Float Radix-4", custom_fft_2048_radix4, ref_us);
+    profile_int16_operation(2048, "Int16 Q15",     custom_fft_2048_int16, ref_us);
+    printf(" ----------------------------------------------------\n");
+
+    // 1024 포인트
+    ref_us = profile_fftw_operation(1024);
+    profile_float_operation(1024, "Float Radix-2", custom_fft_1024_fixed,  ref_us);
+    profile_float_operation(1024, "Float Radix-4", custom_fft_1024_radix4, ref_us);
+    profile_int16_operation(1024, "Int16 Q15",     custom_fft_1024_int16,  ref_us);
+    printf(" ----------------------------------------------------\n");
+
+    // 512 포인트
+    ref_us = profile_fftw_operation(512);
+    profile_float_operation(512, "Float Radix-2", custom_fft_512_fixed, ref_us);
+    profile_float_operation(512, "Float Radix-4", custom_fft_512_fixed, ref_us);
+    profile_int16_operation(512, "Int16 Q15",     custom_fft_512_int16, ref_us);
+    printf(" ----------------------------------------------------\n");
+
+    // 256 포인트
+    ref_us = profile_fftw_operation(256);
+    profile_float_operation(256, "Float Radix-2", custom_fft_256_fixed,  ref_us);
+    profile_float_operation(256, "Float Radix-4", custom_fft_256_radix4, ref_us);
+    profile_int16_operation(256, "Int16 Q15",     custom_fft_256_int16,  ref_us);
+    printf(" ----------------------------------------------------\n");
+
+    // 128 포인트
+    ref_us = profile_fftw_operation(128);
+    profile_float_operation(128, "Float Radix-2", custom_fft_128_fixed, ref_us);
+    profile_int16_operation(128, "Int16 Q15",     custom_fft_128_int16, ref_us);
+    printf(" ----------------------------------------------------\n");
+
+    // 64 포인트
+    ref_us = profile_fftw_operation(64);
+    profile_float_operation(64, "Float Radix-2", custom_fft_64_fixed,        ref_us);
+    profile_float_operation(64, "Float Radix-4", custom_fft_64_radix4,       ref_us);
+    profile_int16_operation(64, "Int16 Q15",     custom_fft_64_int16_radix8, ref_us);
+    
+    printf("====================================================\n\n");
 }

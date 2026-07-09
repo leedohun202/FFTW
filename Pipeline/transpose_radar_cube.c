@@ -1,16 +1,14 @@
-#include "radar_pipeline.h"
-
 /**
- * @brief 3D 레이더 큐브 메모리 전치 (Transpose)
- * @param src 원본 데이터 배열 (Antenna -> Chirp -> Range 순)
- * @param dst 출력 데이터 배열 (Antenna -> Range -> Chirp 순)
- * @param n_samples Range 축의 샘플 개수
- * @details 16x16 타일링(Tiling) 기법을 사용해 라즈베리파이의 캐시 미스를 최소화하며, 
- * OpenMP를 이용해 3중 루프를 병렬 처리합니다.
+ * @brief 3D 레이더 큐브 메모리 전치 (Transpose) - 세그폴트 가드 완비 버전
  */
+#include "radar_config.h"
+#include <stdlib.h>
+
 void transpose_radar_cube(const float *__restrict__ src_real, const float *__restrict__ src_imag,
                           float *__restrict__ dst_real, float *__restrict__ dst_imag, 
                           int n_samples, int n_chirps, const float *__restrict__ win) {
+
+    // OpenMP 스레드들이 외부 3중 블록 루프를 쪼개어 병렬 처리
     #pragma omp parallel for collapse(3)
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int c_blk = 0; c_blk < n_chirps; c_blk += TILE_SIZE) {
@@ -24,7 +22,9 @@ void transpose_radar_cube(const float *__restrict__ src_real, const float *__res
                         int src_idx = ant * (n_chirps * n_samples) + c * n_samples + r;
                         int dst_idx = ant * (n_samples * n_chirps) + r * n_chirps + c;
                         
-                        float w = win[c];
+                        // 🛡️ [세그폴트 방지] win 포인터가 NULL이면 1.0(곱하나 마나)으로 처리, 있으면 배열 참조!
+                        float w = (win == NULL) ? 1.0f : win[c];
+                        
                         dst_real[dst_idx] = src_real[src_idx] * w;
                         dst_imag[dst_idx] = src_imag[src_idx] * w;
                     }

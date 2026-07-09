@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -O3 -mcpu=cortex-a76 -mtune=cortex-a76 -ffast-math -ftree-vectorize -fopenmp -Wall \
-         -I./Globals -I./FFT -I./Pipeline -I./Utils
+         -I./Globals -I./FFT  -I./FFT_int16 -I./FFT_RADIX4 -I./Pipeline -I./Utils
 LDFLAGS = -lfftw3f -lfftw3f_threads -lpthread -lm
 
 # 🎯 타겟 바이너리 정의
@@ -12,7 +12,9 @@ SRCS = main.c \
        $(wildcard Globals/*.c) \
        $(wildcard FFT/*.c) \
        $(wildcard Pipeline/*.c) \
-       $(wildcard Utils/*.c)
+       $(wildcard Utils/*.c) \
+	   $(wildcard FFT_RADIX4/*.c) \
+	   $(wildcard FFT_int16/*.c)
 OBJS = $(SRCS:.c=.o)
 
 # 1️⃣ 기본 타겟 (ESTIMATE 모드: 0.1초 탈출 디버깅용)

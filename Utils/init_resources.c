@@ -1,27 +1,39 @@
 #include "radar_utils.h"
+#include <math.h>
+#include <stdint.h>
+
+#ifndef PI
+#define PI 3.14159265358979323846
+#endif
 
 /**
  * @brief 프로그램 초기화 단계에서 메모리를 1회만 연산하여 LUT 테이블 생성
  * @details 
- * - 레이더 신호 처리에 필요한 모든 크기(2048 ~ 64)의 고정 배열을 사전에 계산합니다.
+ * - 레이더 신호 처리에 필요한 모든 크기(4096 ~ 64)의 고정 배열을 사전에 계산합니다.
  * - 1. Bit-Reversal 주소 테이블 (메모리 스와핑용)
- * - 2. Twiddle Factor (FFT 회전 인자용 삼각함수 테이블)
- * - 3. Hanning Window (주파수 누출 방지용 윈도우 테이블)
+ * - 2. Float Twiddle Factor (N/2 크기) & Hanning Window
+ * - 3. Int16 Twiddle Factor (분기 제거를 위해 전체 N 크기, Q15 포맷) & Int16 Window
  */
 void init_resources() {
-    // 🎯 [수정 완료] Wisdom 로드 로직은 main.c로 완전히 이관 및 격리되었으므로 삭제했습니다.
 
     // =========================================================================
     // [1] Bit-Reversal 주소 테이블 초기화
     // =========================================================================
     
+    // 4096 크기 (12 bits)
+    for (int i = 0; i < 4096; i++) { 
+        int j = 0; 
+        for (int b = 0; b < 12; b++) {
+            if (i & (1 << b)) j |= (1 << (11 - b)); 
+        }
+        bitrev_4096[i] = j; 
+    }
+
     // 2048 크기 (11 bits)
     for (int i = 0; i < 2048; i++) { 
         int j = 0; 
         for (int b = 0; b < 11; b++) {
-            if (i & (1 << b)) {
-                j |= (1 << (10 - b)); 
-            }
+            if (i & (1 << b)) j |= (1 << (10 - b)); 
         }
         bitrev_2048[i] = j; 
     }
@@ -30,9 +42,7 @@ void init_resources() {
     for (int i = 0; i < 1024; i++) { 
         int j = 0; 
         for (int b = 0; b < 10; b++) {
-            if (i & (1 << b)) {
-                j |= (1 << (9 - b));  
-            }
+            if (i & (1 << b)) j |= (1 << (9 - b));  
         }
         bitrev_1024[i] = j;  
     }
@@ -41,9 +51,7 @@ void init_resources() {
     for (int i = 0; i < 512; i++) { 
         int j = 0; 
         for (int b = 0; b < 9; b++) {
-            if (i & (1 << b)) {
-                j |= (1 << (8 - b));  
-            }
+            if (i & (1 << b)) j |= (1 << (8 - b));  
         }
         bitrev_512[i] = j;  
     }
@@ -52,9 +60,7 @@ void init_resources() {
     for (int i = 0; i < 256; i++) { 
         int j = 0; 
         for (int b = 0; b < 8; b++) {
-            if (i & (1 << b)) {
-                j |= (1 << (7 - b));  
-            }
+            if (i & (1 << b)) j |= (1 << (7 - b));  
         }
         bitrev_256[i] = j;  
     }
@@ -63,9 +69,7 @@ void init_resources() {
     for (int i = 0; i < 128; i++) { 
         int j = 0; 
         for (int b = 0; b < 7; b++) {
-            if (i & (1 << b)) {
-                j |= (1 << (6 - b));  
-            }
+            if (i & (1 << b)) j |= (1 << (6 - b));  
         }
         bitrev_128[i] = j;  
     }
@@ -74,83 +78,144 @@ void init_resources() {
     for (int i = 0; i < 64; i++) { 
         int j = 0; 
         for (int b = 0; b < 6; b++) {
-            if (i & (1 << b)) {
-                j |= (1 << (5 - b));  
-            }
+            if (i & (1 << b)) j |= (1 << (5 - b));  
         }
         bitrev_64[i] = j;   
     }
 
+    // 🎯 1. [1024 포인트] 순수 Radix-4 (Base-4 Digit Reversal)
+    for (int i = 0; i < 1024; i++) {
+        int temp = i, rev = 0;
+        for (int j = 0; j < 5; j++) { // 4^5 = 1024
+            rev = (rev << 2) | (temp & 3); // 2비트씩 묶어서 뒤집기
+            temp >>= 2;
+        }
+        digitrev_1024[i] = rev;
+    }
+
+    // 🎯 2. [2048 포인트] 혼합 기수 (Radix-2 + Radix-4 5번)
+    for (int i = 0; i < 2048; i++) {
+        int temp = i, rev = 0;
+        for (int j = 0; j < 5; j++) { // 4^5 블록
+            rev = (rev << 2) | (temp & 3);
+            temp >>= 2;
+        }
+        rev = (rev << 1) | (temp & 1); // 마지막 1비트(Radix-2) 처리
+        mixedrev_2048[i] = rev;
+    }
+
+    // 🎯 3. [512 포인트] 혼합 기수 (Radix-2 + Radix-4 4번)
+    for (int i = 0; i < 512; i++) {
+        int temp = i, rev = 0;
+        for (int j = 0; j < 4; j++) { // 4^4 블록
+            rev = (rev << 2) | (temp & 3);
+            temp >>= 2;
+        }
+        rev = (rev << 1) | (temp & 1); // 마지막 1비트 처리
+        mixedrev_512[i] = rev;
+    }
+
+    // 🎯 1. [1024 포인트] 순수 Radix-4 (Base-4 Digit Reversal)
+    for (int i = 0; i < 256; i++) {
+        int temp = i, rev = 0;
+        for (int j = 0; j < 4; j++) { // 4^5 = 1024
+            rev = (rev << 2) | (temp & 3); // 2비트씩 묶어서 뒤집기
+            temp >>= 2;
+        }
+        digitrev_256[i] = rev;
+    }
+
 
     // =========================================================================
-    // [2] 삼각함수 (Twiddle Factor) 테이블 초기화
+    // [2] FLOAT 삼각함수 (Twiddle Factor) 및 윈도우 초기화
     // =========================================================================
-    // 나비 연산(Butterfly)에 필요한 절반 크기(N/2)의 복소수 회전 인자를 계산합니다.
-    
-    // 2048 크기
-    for (int i = 0; i < 1024; i++) { 
+
+    for (int i = 0; i < 1024; i++) { // 2048 (Twiddle: 1024, Win: 2048)
         twiddle_real_2048[i] = (float)cos(-2.0 * PI * i / 2048); 
         twiddle_imag_2048[i] = (float)sin(-2.0 * PI * i / 2048); 
     }
+    for (int i = 0; i < 2048; i++) win_2048[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (2048 - 1)));
     
-    // 1024 크기
-    for (int i = 0; i < 512; i++) { 
+    for (int i = 0; i < 512; i++) { // 1024 (Twiddle: 512, Win: 1024)
         twiddle_real_1024[i] = (float)cos(-2.0 * PI * i / 1024); 
         twiddle_imag_1024[i] = (float)sin(-2.0 * PI * i / 1024); 
     }
+    for (int i = 0; i < 1024; i++) win_1024[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (1024 - 1)));
 
-    // 512 크기
-    for (int i = 0; i < 256; i++) { 
+    for (int i = 0; i < 256; i++) { // 512 (Twiddle: 256, Win: 512)
         twiddle_real_512[i]  = (float)cos(-2.0 * PI * i / 512);  
         twiddle_imag_512[i]  = (float)sin(-2.0 * PI * i / 512); 
     }
+    for (int i = 0; i < 512; i++) win_512[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (512 - 1)));
 
-    // 256 크기
-    for (int i = 0; i < 128; i++) { 
+    for (int i = 0; i < 128; i++) { // 256 (Twiddle: 128, Win: 256)
         twiddle_real_256[i]  = (float)cos(-2.0 * PI * i / 256);  
         twiddle_imag_256[i]  = (float)sin(-2.0 * PI * i / 256); 
     }
+    for (int i = 0; i < 256; i++) win_256[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (256 - 1)));
 
-    // 128 크기
-    for (int i = 0; i < 64; i++) { 
+    for (int i = 0; i < 64; i++) { // 128 (Twiddle: 64, Win: 128)
         twiddle_real_128[i]  = (float)cos(-2.0 * PI * i / 128);  
         twiddle_imag_128[i]  = (float)sin(-2.0 * PI * i / 128); 
     }
+    for (int i = 0; i < 128; i++) win_128[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (128 - 1)));
 
-    // 64 크기
-    for (int i = 0; i < 32; i++) { 
+    for (int i = 0; i < 32; i++) { // 64 (Twiddle: 32)
         twiddle_real_64[i]   = (float)cos(-2.0 * PI * i / 64);   
         twiddle_imag_64[i]   = (float)sin(-2.0 * PI * i / 64); 
     }
 
 
     // =========================================================================
-    // [3] 해닝 윈도우 (Hanning Window) 테이블 초기화
+    // [3] 🔥 INT16 고정소수점(Q15 포맷) 전용 테이블 초기화
     // =========================================================================
-    // 양 끝단을 부드럽게 깎아주어 주파수 영역에서의 Sidelobe 누출을 방지합니다.
+    // 주의: Radix-8 분기 제거를 위해 N/2가 아닌 풀사이즈(N)로 생성합니다.
     
+    // 4096 크기
+    for (int i = 0; i < 4096; i++) {
+        twiddle_int16_real_4096[i] = (int16_t)round(cos(-2.0 * PI * i / 4096) * 32767.0);
+        twiddle_int16_imag_4096[i] = (int16_t)round(sin(-2.0 * PI * i / 4096) * 32767.0);
+        win_int16_4096[i] = (int16_t)round((0.5 * (1.0 - cos(2.0 * PI * i / (4096 - 1)))) * 32767.0);
+    }
+
     // 2048 크기
     for (int i = 0; i < 2048; i++) {
-        win_2048[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (2048 - 1)));
+        twiddle_int16_real_2048[i] = (int16_t)round(cos(-2.0 * PI * i / 2048) * 32767.0);
+        twiddle_int16_imag_2048[i] = (int16_t)round(sin(-2.0 * PI * i / 2048) * 32767.0);
+        win_int16_2048[i] = (int16_t)round((0.5 * (1.0 - cos(2.0 * PI * i / (2048 - 1)))) * 32767.0);
     }
-        
+
     // 1024 크기
     for (int i = 0; i < 1024; i++) {
-        win_1024[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (1024 - 1)));
+        twiddle_int16_real_1024[i] = (int16_t)round(cos(-2.0 * PI * i / 1024) * 32767.0);
+        twiddle_int16_imag_1024[i] = (int16_t)round(sin(-2.0 * PI * i / 1024) * 32767.0);
+        win_int16_1024[i] = (int16_t)round((0.5 * (1.0 - cos(2.0 * PI * i / (1024 - 1)))) * 32767.0);
     }
-    
+
     // 512 크기
     for (int i = 0; i < 512; i++) {
-        win_512[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (512 - 1)));
+        twiddle_int16_real_512[i] = (int16_t)round(cos(-2.0 * PI * i / 512) * 32767.0);
+        twiddle_int16_imag_512[i] = (int16_t)round(sin(-2.0 * PI * i / 512) * 32767.0);
+        win_int16_512[i] = (int16_t)round((0.5 * (1.0 - cos(2.0 * PI * i / (512 - 1)))) * 32767.0);
     }
-    
+
     // 256 크기
     for (int i = 0; i < 256; i++) {
-        win_256[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (256 - 1)));
+        twiddle_int16_real_256[i] = (int16_t)round(cos(-2.0 * PI * i / 256) * 32767.0);
+        twiddle_int16_imag_256[i] = (int16_t)round(sin(-2.0 * PI * i / 256) * 32767.0);
+        win_int16_256[i] = (int16_t)round((0.5 * (1.0 - cos(2.0 * PI * i / (256 - 1)))) * 32767.0);
     }
-    
+
     // 128 크기
     for (int i = 0; i < 128; i++) {
-        win_128[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (128 - 1)));
+        twiddle_int16_real_128[i] = (int16_t)round(cos(-2.0 * PI * i / 128) * 32767.0);
+        twiddle_int16_imag_128[i] = (int16_t)round(sin(-2.0 * PI * i / 128) * 32767.0);
+        win_int16_128[i] = (int16_t)round((0.5 * (1.0 - cos(2.0 * PI * i / (128 - 1)))) * 32767.0);
+    }
+
+    // 64 크기 (윈도우 불필요)
+    for (int i = 0; i < 64; i++) {
+        twiddle_int16_real_64[i] = (int16_t)round(cos(-2.0 * PI * i / 64) * 32767.0);
+        twiddle_int16_imag_64[i] = (int16_t)round(sin(-2.0 * PI * i / 64) * 32767.0);
     }
 }

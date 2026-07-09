@@ -12,6 +12,10 @@ void transpose_radar_cube(const float *__restrict__ src_real, const float *__res
                           float *__restrict__ dst_real, float *__restrict__ dst_imag, 
                           int n_samples, int n_chirps, const float *__restrict__ win);
 
+
+void transpose_radar_cube_int16(int16_t *__restrict__ in_real, int16_t *__restrict__ in_imag,
+                                int16_t *__restrict__ out_real, int16_t *__restrict__ out_imag,
+                                int n_samples, int n_chirps, const int16_t *__restrict__ win_int16);
 /**
  * @brief 최적화된 Zero-Allocation 가변 2D Doppler FFT 파이프라인 집행 커널
  * @param n_chirps 현재 세션의 처프 개수 (256 또는 512)
@@ -19,7 +23,10 @@ void transpose_radar_cube(const float *__restrict__ src_real, const float *__res
 void execute_custom_pipeline(float *__restrict__ cube_real, float *__restrict__ cube_imag, 
                              float *__restrict__ tmp_real, float *__restrict__ tmp_imag, 
                              int n_samples, int n_chirps);
-
+            
+void execute_custom_pipeline_int16(int16_t *__restrict__ cube_real, int16_t *__restrict__ cube_imag, 
+                                   int16_t *__restrict__ tmp_real, int16_t *__restrict__ tmp_imag, 
+                                   int n_samples, int n_chirps);
 /**
  * @brief 대조군 FFTW3 전용 최적화 2D Doppler FFT 파이프라인
  */
