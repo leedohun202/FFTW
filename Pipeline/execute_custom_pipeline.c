@@ -1,31 +1,59 @@
 #include "radar_pipeline.h"
+#include "radar_fft.h"
+#include "radar_config.h"
+#include <stddef.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
-/**
- * @brief Zero-Allocation 및 최적화된 2D Doppler FFT 파이프라인 집행 커널
- * @param cube_real   입력 데이터의 실수부 배열 포인터
- * @param cube_imag   입력 데이터의 허수부 배열 포인터
- * @param tmp_real    외부(run_benchmark)에서 미리 할당되어 넘어온 실수부 임시 버퍼
- * @param tmp_imag    외부(run_benchmark)에서 미리 할당되어 넘어온 허수부 임시 버퍼
- * @param n_samples   Range 축의 샘플 개수
- */
+// -------------------------------------------------------------
+// [1] 기존 Float Radix-2 파이프라인
+// -------------------------------------------------------------
 void execute_custom_pipeline(float *__restrict__ cube_real, float *__restrict__ cube_imag, 
                              float *__restrict__ tmp_real, float *__restrict__ tmp_imag, 
                              int n_samples, int n_chirps) {
     
-    // 💡 1단계: 가변 처프 창함수를 판단하여 분리된 전치 함수 호출
-    const float *current_win = (n_chirps == 512) ? win_512 : win_256;
+    const float *current_win = NULL;
+    if (n_chirps == 512) current_win = win_512;
+    else if (n_chirps == 256) current_win = win_256;
+    else if (n_chirps == 128) current_win = win_128;
+
     transpose_radar_cube(cube_real, cube_imag, tmp_real, tmp_imag, n_samples, n_chirps, current_win); 
     
-    // 💡 2단계: 2D Doppler FFT 병렬 구동 (256처프면 Radix-4, 512처프면 기존 NEON 가동)
     #pragma omp parallel for collapse(2)
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int r = 0; r < n_samples; r++) {
             int offset = ant * (n_samples * n_chirps) + r * n_chirps;
-            if (n_chirps == 512) {
-                custom_fft_512_fixed(&tmp_real[offset], &tmp_imag[offset]);
-            } else {
-                custom_fft_256_radix4(&tmp_real[offset], &tmp_imag[offset]);
-            }
+            if (n_chirps == 512)      custom_fft_512_fixed(&tmp_real[offset], &tmp_imag[offset]);
+            else if (n_chirps == 256) custom_fft_256_fixed(&tmp_real[offset], &tmp_imag[offset]);
+            else if (n_chirps == 128) custom_fft_128_fixed(&tmp_real[offset], &tmp_imag[offset]);
+            else if (n_chirps == 64)  custom_fft_64_fixed(&tmp_real[offset], &tmp_imag[offset]);
+        }
+    }
+}
+
+// -------------------------------------------------------------
+// 🚀 [2] 신규 Float Radix-4 파이프라인
+// -------------------------------------------------------------
+void execute_custom_pipeline_radix4(float *__restrict__ cube_real, float *__restrict__ cube_imag, 
+                                    float *__restrict__ tmp_real, float *__restrict__ tmp_imag, 
+                                    int n_samples, int n_chirps) {
+    
+    const float *current_win = NULL;
+    if (n_chirps == 512) current_win = win_512;
+    else if (n_chirps == 256) current_win = win_256;
+    else if (n_chirps == 128) current_win = win_128;
+
+    transpose_radar_cube(cube_real, cube_imag, tmp_real, tmp_imag, n_samples, n_chirps, current_win); 
+    
+    #pragma omp parallel for collapse(2)
+    for (int ant = 0; ant < N_ANTENNAS; ant++) {
+        for (int r = 0; r < n_samples; r++) {
+            int offset = ant * (n_samples * n_chirps) + r * n_chirps;
+            if (n_chirps == 512)      custom_fft_512_radix4(&tmp_real[offset], &tmp_imag[offset]);
+            else if (n_chirps == 256) custom_fft_256_radix4(&tmp_real[offset], &tmp_imag[offset]);
+            else if (n_chirps == 128) custom_fft_128_radix4(&tmp_real[offset], &tmp_imag[offset]);
+            else if (n_chirps == 64)  custom_fft_64_radix4(&tmp_real[offset], &tmp_imag[offset]);
         }
     }
 }

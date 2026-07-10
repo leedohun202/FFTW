@@ -23,8 +23,16 @@ void transpose_radar_cube_int16(int16_t *__restrict__ in_real, int16_t *__restri
 void execute_custom_pipeline(float *__restrict__ cube_real, float *__restrict__ cube_imag, 
                              float *__restrict__ tmp_real, float *__restrict__ tmp_imag, 
                              int n_samples, int n_chirps);
+
+void execute_custom_pipeline_radix4(float *__restrict__ cube_real, float *__restrict__ cube_imag, 
+                             float *__restrict__ tmp_real, float *__restrict__ tmp_imag, 
+                             int n_samples, int n_chirps);
             
 void execute_custom_pipeline_int16(int16_t *__restrict__ cube_real, int16_t *__restrict__ cube_imag, 
+                                   int16_t *__restrict__ tmp_real, int16_t *__restrict__ tmp_imag, 
+                                   int n_samples, int n_chirps);
+
+void execute_custom_pipeline_int16_radix4(int16_t *__restrict__ cube_real, int16_t *__restrict__ cube_imag, 
                                    int16_t *__restrict__ tmp_real, int16_t *__restrict__ tmp_imag, 
                                    int n_samples, int n_chirps);
 /**

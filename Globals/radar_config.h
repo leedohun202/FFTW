@@ -25,6 +25,8 @@
 #define MAX_DETECTED 10
 #define BENCH_RUNS  10 
 #define TILE_SIZE   16    
+// 🎯 [핵심 패치] 64바이트 캐시 라인 완벽 정렬을 위한 Int16 전용 32x32 타일
+#define TILE_SIZE_INT16 32
 #define FFTW_WISDOM_FILE "radar_fftw_pi5.wisdom"
 
 // 전역 물리 상수

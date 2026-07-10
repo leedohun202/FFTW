@@ -14,7 +14,8 @@ SRCS = main.c \
        $(wildcard Pipeline/*.c) \
        $(wildcard Utils/*.c) \
 	   $(wildcard FFT_RADIX4/*.c) \
-	   $(wildcard FFT_int16/*.c)
+	   $(wildcard FFT_int16/*.c) \
+	   $(wildcard FFT_int16_RADIX4/*.c)
 OBJS = $(SRCS:.c=.o)
 
 # 1️⃣ 기본 타겟 (ESTIMATE 모드: 0.1초 탈출 디버깅용)
