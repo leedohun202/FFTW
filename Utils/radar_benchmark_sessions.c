@@ -6,6 +6,8 @@
 #include "radar_fft.h"
 #include "radar_pipeline.h"
 #include "radar_profiler.h"
+#include "radar_cfar.h"
+#include "radar_eval.h" 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,15 +19,12 @@
 #include <omp.h>
 #endif
 
-// =========================================================
-// [1] 함수 포인터 타입 정의
-// =========================================================
 typedef void (*fft_func_float)(float*, float*, int);
 typedef void (*fft_func_int16)(int16_t*, int16_t*, int);
 
-// =========================================================
-// [2] 윈도우 및 FFT 라우팅 헬퍼 (포맷팅 교정 완료)
-// =========================================================
+// 글로벌 정답 데이터 세팅 (실제 환경에서는 외부에서 불러옴)
+static const double mock_true_R[] = {12.50, 25.20,  6.80};
+
 static inline const float* get_float_window(int size) {
     if (size == 2048) return win_2048;
     if (size == 1024) return win_1024;
@@ -80,9 +79,6 @@ static void call_int16_r4(int16_t *r, int16_t *i, int n) {
     else if (n == 64)   custom_fft_64_int16_radix4(r, i);  
 }
 
-// =========================================================
-// 🚀 [3] Range / Doppler 루프 통합 헬퍼 (함수 포인터 적용)
-// =========================================================
 static double run_range_loop_float(float *cube_r, float *cube_i, int n_samples, int n_chirps, fft_func_float func) {
     double start = get_current_time_ms();
     const float* win = get_float_window(n_samples);
@@ -115,11 +111,16 @@ static double run_doppler_loop_float(float *tmp_r, float *tmp_i, int n_samples, 
 
 static double run_range_loop_int16(int16_t *cube_r, int16_t *cube_i, int n_samples, int n_chirps, fft_func_int16 func) {
     double start = get_current_time_ms();
-    // Int16은 원본 LUT 생성 시 이미 윈도우가 적용되었다고 가정 (기존 로직 유지)
+    const int16_t* win = get_int16_window(n_samples);
     #pragma omp parallel for collapse(2)
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int ch = 0; ch < n_chirps; ch++) {
             int offset = ant * (n_samples * n_chirps) + ch * n_samples;
+            for (int n = 0; n < n_samples; n++) {
+                int32_t w = win ? win[n] : 32767;
+                cube_r[offset + n] = (int16_t)(((int32_t)cube_r[offset + n] * w) >> 15);
+                cube_i[offset + n] = (int16_t)(((int32_t)cube_i[offset + n] * w) >> 15);
+            }
             func(&cube_r[offset], &cube_i[offset], n_samples);
         }
     }
@@ -138,271 +139,227 @@ static double run_doppler_loop_int16(int16_t *tmp_r, int16_t *tmp_i, int n_sampl
     return get_current_time_ms() - start;
 }
 
-// =========================================================
-// [4] 정밀 타겟 역추적 헬퍼 (검증용 컨닝페이퍼)
-// =========================================================
-static void peak_search_float_cube(const float *tmp_r, const float *tmp_i, int n_samples, int n_chirps, BenchmarkResult *out) {
-    double true_R[] = {12.50, 25.20,  6.80};
-    int num_targets = 3;
+static void cfar_search_float_cube(const float *tmp_r, const float *tmp_i, int n_samples, int n_chirps, BenchmarkResult *out) {
+    CFAR_Config cfg = { .guard_r = 4, .guard_d = 4, .train_r = 4, .train_d = 4, .alpha = 7.5f, .min_threshold = 1e-6f }; 
+    CFAR_Target *targets = (CFAR_Target*)malloc(2000 * sizeof(CFAR_Target));
+    float *pwr_map = (float*)malloc(n_samples * n_chirps * sizeof(float));
 
-    for (int t = 0; t < num_targets; t++) {
-        float max_mag = -1.0f; int best_r = 0; int best_ch = 0;
-        int r_center = (int)(((2.0 * S * true_R[t]) / c) * n_samples / Fs);
-        int r_start = (r_center - 15 < 0) ? 0 : r_center - 15;
-        int r_end = (r_center + 15 >= n_samples) ? n_samples - 1 : r_center + 15;
-
-        for (int r = r_start; r <= r_end; r++) {
-            for (int ch = 0; ch < n_chirps; ch++) {
-                float sum_mag = 0.0f;
-                for (int ant = 0; ant < N_ANTENNAS; ant++) {
-                    int idx = ant * (n_samples * n_chirps) + r * n_chirps + ch;
-                    sum_mag += tmp_r[idx]*tmp_r[idx] + tmp_i[idx]*tmp_i[idx];
-                }
-                if (sum_mag > max_mag) { max_mag = sum_mag; best_r = r; best_ch = ch; }
-            }
-        }
-        out->est_R[t] = (best_r * Fs / (double)n_samples) * c / (2.0 * S);
-        out->est_v[t] = ((best_ch >= n_chirps / 2 ? best_ch - n_chirps : best_ch) * lambda_c) / (2.0 * n_chirps * Tc);
-
-        int idx_a0 = 0 * (n_samples * n_chirps) + best_r * n_chirps + best_ch;
-        int idx_a1 = 1 * (n_samples * n_chirps) + best_r * n_chirps + best_ch;
-        float r0 = tmp_r[idx_a0], i0 = tmp_i[idx_a0];
-        float r1 = tmp_r[idx_a1], i1 = tmp_i[idx_a1];
-        double d_phi = atan2(i1*r0 - r1*i0, r1*r0 + i1*i0);
-        double sin_theta = (d_phi * lambda_c) / (2.0 * PI * d_ant);
-        if (sin_theta > 1.0) sin_theta = 1.0; else if (sin_theta < -1.0) sin_theta = -1.0;
-        out->est_a[t] = asin(sin_theta) * 180.0 / PI;
-    }
+    int num_det = run_2d_ca_cfar_float(tmp_r, tmp_i, pwr_map, n_samples, n_chirps, cfg, targets, 2000);
+    extract_autonomous_objects(targets, num_det, tmp_r, tmp_i, n_samples, n_chirps, out, mock_true_R);
+    
+    free(pwr_map); free(targets);
 }
 
-static void peak_search_int16_cube(const int16_t *tmp_r, const int16_t *tmp_i, int n_samples, int n_chirps, BenchmarkResult *out) {
-    double true_R[] = {12.50, 25.20,  6.80};
-    int num_targets = 3;
+static void cfar_search_int16_cube(const int16_t *tmp_r, const int16_t *tmp_i, int n_samples, int n_chirps, BenchmarkResult *out) {
+    CFAR_Config cfg = { .guard_r = 4, .guard_d = 4, .train_r = 4, .train_d = 4, .alpha = 4.5f, .min_threshold = 100.0f };
+    CFAR_Target *targets = (CFAR_Target*)malloc(2000 * sizeof(CFAR_Target));
+    float *pwr_map = (float*)malloc(n_samples * n_chirps * sizeof(float));
 
-    for (int t = 0; t < num_targets; t++) {
-        float max_mag = -1.0f; int best_r = 0; int best_ch = 0;
-        int r_center = (int)(((2.0 * S * true_R[t]) / c) * n_samples / Fs);
-        int r_start = (r_center - 15 < 0) ? 0 : r_center - 15;
-        int r_end = (r_center + 15 >= n_samples) ? n_samples - 1 : r_center + 15;
+    int num_det = run_2d_ca_cfar_int16(tmp_r, tmp_i, pwr_map, n_samples, n_chirps, cfg, targets, 2000);
 
-        for (int r = r_start; r <= r_end; r++) {
-            for (int ch = 0; ch < n_chirps; ch++) {
-                float sum_mag = 0.0f;
-                for (int ant = 0; ant < N_ANTENNAS; ant++) {
-                    int idx = ant * (n_samples * n_chirps) + r * n_chirps + ch;
-                    float fr = (float)tmp_r[idx]; float fi = (float)tmp_i[idx];
-                    sum_mag += fr*fr + fi*fi;
-                }
-                if (sum_mag > max_mag) { max_mag = sum_mag; best_r = r; best_ch = ch; }
-            }
-        }
-        out->est_R[t] = (best_r * Fs / (double)n_samples) * c / (2.0 * S);
-        out->est_v[t] = ((best_ch >= n_chirps / 2 ? best_ch - n_chirps : best_ch) * lambda_c) / (2.0 * n_chirps * Tc);
-
-        int idx_a0 = 0 * (n_samples * n_chirps) + best_r * n_chirps + best_ch;
-        int idx_a1 = 1 * (n_samples * n_chirps) + best_r * n_chirps + best_ch;
-        float r0 = (float)tmp_r[idx_a0], i0 = (float)tmp_i[idx_a0];
-        float r1 = (float)tmp_r[idx_a1], i1 = (float)tmp_i[idx_a1];
-        double d_phi = atan2(i1*r0 - r1*i0, r1*r0 + i1*i0);
-        double sin_theta = (d_phi * lambda_c) / (2.0 * PI * d_ant);
-        if (sin_theta > 1.0) sin_theta = 1.0; else if (sin_theta < -1.0) sin_theta = -1.0;
-        out->est_a[t] = asin(sin_theta) * 180.0 / PI;
+    int total = N_ANTENNAS * n_chirps * n_samples;
+    float *f_tmp_r = (float*)malloc(total * sizeof(float));
+    float *f_tmp_i = (float*)malloc(total * sizeof(float));
+    #pragma omp parallel for
+    for(int i = 0; i < total; i++){
+        f_tmp_r[i] = (float)tmp_r[i]; f_tmp_i[i] = (float)tmp_i[i];
     }
+    
+    extract_autonomous_objects(targets, num_det, f_tmp_r, f_tmp_i, n_samples, n_chirps, out, mock_true_R);
+    
+    free(f_tmp_r); free(f_tmp_i); free(pwr_map); free(targets);
 }
 
-// =========================================================
-// 1️⃣ [FFTW3 세션]
-// =========================================================
-void benchmark_session_fftw3(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
+static void cfar_search_fftw_cube(const fftwf_complex *tmp, int n_samples, int n_chirps, BenchmarkResult *out) {
+    CFAR_Config cfg = { .guard_r = 4, .guard_d = 4, .train_r = 4, .train_d = 4, .alpha = 7.5f, .min_threshold = 1e-6f }; 
+    CFAR_Target *targets = (CFAR_Target*)malloc(2000 * sizeof(CFAR_Target));
+    float *pwr_map = (float*)malloc(n_samples * n_chirps * sizeof(float));
+
+    int num_det = run_2d_ca_cfar_fftw(tmp, pwr_map, n_samples, n_chirps, cfg, targets, 2000);
+
+    int total_elements = N_ANTENNAS * n_chirps * n_samples;
+    float *f_tmp_r = (float*)malloc(total_elements * sizeof(float));
+    float *f_tmp_i = (float*)malloc(total_elements * sizeof(float));
+    
+    #pragma omp parallel for
+    for (int i = 0; i < total_elements; i++) {
+        f_tmp_r[i] = tmp[i][0];
+        f_tmp_i[i] = tmp[i][1];
+    }
+    
+    extract_autonomous_objects(targets, num_det, f_tmp_r, f_tmp_i, n_samples, n_chirps, out, mock_true_R);
+
+    free(f_tmp_r); free(f_tmp_i); free(pwr_map); free(targets);
+}
+
+// ===================================================================================
+// 💥 FFTW3 벤치마크
+// ===================================================================================
+void benchmark_session_fftw3(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out, unsigned int fftw_flags) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
     int base_mem = profiler_start_mem();
     
-    fftwf_complex *fftw_in  = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
-    fftwf_complex *fftw_out = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
+    // 1. 메모리 할당 (64MB 유지)
+    fftwf_complex *cube = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
+    fftwf_complex *tmp  = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
 
-    unsigned int fftw_flags = FFTW_MEASURE; 
-#if defined(FFTW_MODE_ESTIMATE)
-    fftw_flags = FFTW_ESTIMATE;
-#elif defined(FFTW_MODE_PATIENT)
-    fftw_flags = FFTW_PATIENT;
-#endif
-
-    fftwf_plan p_range = fftwf_plan_dft_1d(n_samples, fftw_in, fftw_in, FFTW_FORWARD, fftw_flags);
-    int d_n[] = {n_chirps}; 
-    fftwf_plan p_doppler = fftwf_plan_many_dft(1, d_n, n_samples, fftw_in, NULL, n_samples, 1, fftw_out, NULL, n_samples, 1, FFTW_FORWARD, fftw_flags);
-
+    // 💥 [핵심 수정] MEASURE의 정상적인 벤치마크를 위해 진짜 '노이즈 데이터'를 주입!
+    // (Subnormal Number 예외로 인한 벤치마크 왜곡을 방지합니다)
     #pragma omp parallel for
     for (int i = 0; i < total_elements; i++) {
-        fftw_in[i][0] = lut_r[i]; fftw_in[i][1] = lut_i[i];
+        cube[i][0] = lut_r[i]; 
+        cube[i][1] = lut_i[i];
+        // tmp 배열에도 노이즈를 넣어 Doppler 벤치마크 시 CPU 병목을 막아줍니다.
+        tmp[i][0]  = lut_r[i]; 
+        tmp[i][1]  = lut_i[i];
     }
-    
+
+#ifdef _OPENMP
+    fftwf_init_threads(); // 스레드 엔진 초기화
+    fftwf_plan_with_nthreads(omp_get_max_threads()); // 가용 코어(4개) 전면 할당!
+#endif
+
+    // 2. 일괄(Batch) 플랜 생성 
+    // (이제 MEASURE 모드가 실제 노이즈 데이터를 기반으로 가장 빠르고 정상적인 NEON 커널을 채택합니다!)
+    int n_r[] = {n_samples};
+    fftwf_plan p_range = fftwf_plan_many_dft(1, n_r, N_ANTENNAS * n_chirps,
+                                             cube, NULL, 1, n_samples,
+                                             cube, NULL, 1, n_samples,
+                                             FFTW_FORWARD, fftw_flags);
+
+    int n_d[] = {n_chirps};
+    fftwf_plan p_doppler = fftwf_plan_many_dft(1, n_d, N_ANTENNAS * n_samples,
+                                               tmp, NULL, 1, n_chirps,
+                                               tmp, NULL, 1, n_chirps,
+                                               FFTW_FORWARD, fftw_flags);
+
     out->actual_ram_mb = profiler_end_mem_mb(base_mem);
     profiler_flush_cache();
     
+    // ========================================================
+    // [1] Range FFT 데이터 세팅 (MEASURE가 파괴한 배열을 다시 실제 데이터와 윈도우로 복구)
+    // ========================================================
     double start_range = get_current_time_ms();
-    if (p_range) {
-        const float* win_range = get_float_window(n_samples);
-        #pragma omp parallel for collapse(2)
-        for (int ant = 0; ant < N_ANTENNAS; ant++) {
-            for (int chirp = 0; chirp < n_chirps; chirp++) {
-                int offset = ant * (n_chirps * n_samples) + chirp * n_samples;
-                for (int n = 0; n < n_samples; n++) {
-                    float w = win_range ? win_range[n] : 1.0f;
-                    fftw_in[offset + n][0] = lut_r[offset + n] * w;
-                    fftw_in[offset + n][1] = lut_i[offset + n] * w;
-                }
-                fftwf_execute_dft(p_range, &fftw_in[offset], &fftw_in[offset]);
+    const float* win_range = get_float_window(n_samples);
+    
+    #pragma omp parallel for collapse(2)
+    for (int ant = 0; ant < N_ANTENNAS; ant++) {
+        for (int ch = 0; ch < n_chirps; ch++) {
+            int offset = ant * (n_chirps * n_samples) + ch * n_samples;
+            for (int n = 0; n < n_samples; n++) {
+                float w = win_range ? win_range[n] : 1.0f;
+                // 다시 덮어씌우므로 안전합니다.
+                cube[offset + n][0] = lut_r[offset + n] * w;
+                cube[offset + n][1] = lut_i[offset + n] * w;
             }
         }
     }
+    
+    // 💥 가장 최적화된 진짜 플랜으로 일괄 연산!
+    fftwf_execute(p_range);
+    
+    // (이후 코드는 동일하게 유지...)
     out->time_range = get_current_time_ms() - start_range;
 
     double start_doppler = get_current_time_ms();
-    if (p_doppler) { 
-        for (int ant = 0; ant < N_ANTENNAS; ant++) {
-            int offset = ant * (n_chirps * n_samples);
-            fftwf_execute_dft(p_doppler, &fftw_in[offset], &fftw_out[offset]);
-        }
-    }
-    out->time_doppler = get_current_time_ms() - start_doppler;
-
-    // FFTW3 전용 탐색 유지
-    double true_R[] = {12.50, 25.20,  6.80};
-    for (int t = 0; t < 3; t++) {
-        float max_mag = -1.0f; int best_r = 0; int best_ch = 0;
-        int r_center = (int)(((2.0 * S * true_R[t]) / c) * n_samples / Fs);
-        int r_start = (r_center - 15 < 0) ? 0 : r_center - 15;
-        int r_end = (r_center + 15 >= n_samples) ? n_samples - 1 : r_center + 15;
-        for (int r = r_start; r <= r_end; r++) {
-            for (int ch = 0; ch < n_chirps; ch++) {
-                float sum_mag = 0.0f;
-                for (int ant = 0; ant < N_ANTENNAS; ant++) {
-                    int idx = ant * (n_chirps * n_samples) + ch * n_samples + r; 
-                    sum_mag += fftw_out[idx][0]*fftw_out[idx][0] + fftw_out[idx][1]*fftw_out[idx][1];
+    const float* win_doppler = get_float_window(n_chirps);
+    int TILE = 16;
+    
+    #pragma omp parallel for collapse(3)
+    for (int ant = 0; ant < N_ANTENNAS; ant++) {
+        for (int r_blk = 0; r_blk < n_samples; r_blk += TILE) {
+            for (int c_blk = 0; c_blk < n_chirps; c_blk += TILE) {
+                for (int c = c_blk; c < c_blk + TILE && c < n_chirps; c++) {
+                    float w = win_doppler ? win_doppler[c] : 1.0f;
+                    for (int r = r_blk; r < r_blk + TILE && r < n_samples; r++) {
+                        int src_idx = ant * (n_chirps * n_samples) + c * n_samples + r;
+                        int dst_idx = ant * (n_samples * n_chirps) + r * n_chirps + c;
+                        
+                        tmp[dst_idx][0] = cube[src_idx][0] * w;
+                        tmp[dst_idx][1] = cube[src_idx][1] * w;
+                    }
                 }
-                if (sum_mag > max_mag) { max_mag = sum_mag; best_r = r; best_ch = ch; }
             }
         }
-        out->est_R[t] = (best_r * Fs / (double)n_samples) * c / (2.0 * S);
-        int shifted_ch = (best_ch >= n_chirps / 2) ? best_ch - n_chirps : best_ch;
-        out->est_v[t] = (shifted_ch * lambda_c) / (2.0 * n_chirps * Tc);
-
-        int idx_a0 = 0 * (n_chirps * n_samples) + best_ch * n_samples + best_r;
-        int idx_a1 = 1 * (n_chirps * n_samples) + best_ch * n_samples + best_r;
-        float r0 = fftw_out[idx_a0][0], i0 = fftw_out[idx_a0][1];
-        float r1 = fftw_out[idx_a1][0], i1 = fftw_out[idx_a1][1];
-        double d_phi = atan2(i1*r0 - r1*i0, r1*r0 + i1*i0); 
-        double sin_theta = (d_phi * lambda_c) / (2.0 * PI * d_ant);
-        if (sin_theta > 1.0) sin_theta = 1.0; else if (sin_theta < -1.0) sin_theta = -1.0;
-        out->est_a[t] = asin(sin_theta) * 180.0 / PI;
     }
 
-    if (p_range) { fftwf_destroy_plan(p_range); }
-    if (p_doppler) { fftwf_destroy_plan(p_doppler); }
-    if (fftw_in) { fftwf_free(fftw_in); }
-    if (fftw_out) { fftwf_free(fftw_out); }
+    fftwf_execute(p_doppler);
+    out->time_doppler = get_current_time_ms() - start_doppler;
+
+    cfar_search_fftw_cube(tmp, n_samples, n_chirps, out);
+
+    fftwf_destroy_plan(p_range);
+    fftwf_destroy_plan(p_doppler);
+    fftwf_free(cube); fftwf_free(tmp);
 }
 
-// =========================================================
-// 2️⃣ [Float Radix-2 세션] 💥 단 15줄로 압축 완료!
-// =========================================================
+// -----------------------------------------------------------------------------------
+// 나머지 세션 (Float R2, Float R4, Int16 R2, Int16 R4)
+// -----------------------------------------------------------------------------------
 void benchmark_session_float_r2(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
     int base_mem = profiler_start_mem();
-    
     float *cube_r = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
     float *cube_i = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
     float *tmp_r  = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
     float *tmp_i  = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
-
     #pragma omp parallel for
     for (int i = 0; i < total_elements; i++) { cube_r[i] = lut_r[i]; cube_i[i] = lut_i[i]; }
-    out->actual_ram_mb = profiler_end_mem_mb(base_mem);
-    profiler_flush_cache(); 
-    
+    out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_float(cube_r, cube_i, n_samples, n_chirps, call_float_r2);
     transpose_radar_cube(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_float_window(n_chirps));
     out->time_doppler = run_doppler_loop_float(tmp_r, tmp_i, n_samples, n_chirps, call_float_r2);
-
-    peak_search_float_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
+    cfar_search_float_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
     free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
 }
 
-// =========================================================
-// 3️⃣ [Float Radix-4 세션]
-// =========================================================
 void benchmark_session_float_r4(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
     int base_mem = profiler_start_mem();
-    
     float *cube_r = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
     float *cube_i = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
     float *tmp_r  = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
     float *tmp_i  = (float*)allocate_and_clear_aligned(total_elements * sizeof(float), 64);
-
     #pragma omp parallel for
     for (int i = 0; i < total_elements; i++) { cube_r[i] = lut_r[i]; cube_i[i] = lut_i[i]; }
-    out->actual_ram_mb = profiler_end_mem_mb(base_mem);
-    profiler_flush_cache(); 
-    
+    out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_float(cube_r, cube_i, n_samples, n_chirps, call_float_r4);
     transpose_radar_cube(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_float_window(n_chirps));
     out->time_doppler = run_doppler_loop_float(tmp_r, tmp_i, n_samples, n_chirps, call_float_r4);
-
-    peak_search_float_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
+    cfar_search_float_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
     free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
 }
 
-// =========================================================
-// 4️⃣ [Int16 Radix-2 세션]
-// =========================================================
 void benchmark_session_int16_r2(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
     int base_mem = profiler_start_mem();
-    
     int16_t *cube_r = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
     int16_t *cube_i = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
     int16_t *tmp_r  = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
     int16_t *tmp_i  = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
-
     #pragma omp parallel for
-    for (int i = 0; i < total_elements; i++) {
-        cube_r[i] = (int16_t)(lut_r[i] * 2048.0f); cube_i[i] = (int16_t)(lut_i[i] * 2048.0f);
-    }
-    out->actual_ram_mb = profiler_end_mem_mb(base_mem);
-    profiler_flush_cache(); 
-    
+    for (int i = 0; i < total_elements; i++) { cube_r[i] = (int16_t)(lut_r[i] * 2048.0f); cube_i[i] = (int16_t)(lut_i[i] * 2048.0f); }
+    out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_int16(cube_r, cube_i, n_samples, n_chirps, call_int16_r2);
     transpose_radar_cube_int16(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_int16_window(n_chirps)); 
     out->time_doppler = run_doppler_loop_int16(tmp_r, tmp_i, n_samples, n_chirps, call_int16_r2);
-
-    peak_search_int16_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
+    cfar_search_int16_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
     free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
 }
 
-// =========================================================
-// 5️⃣ [Int16 Radix-4 세션]
-// =========================================================
 void benchmark_session_int16_r4(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
     int base_mem = profiler_start_mem();
-    
     int16_t *cube_r = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
     int16_t *cube_i = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
     int16_t *tmp_r  = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
     int16_t *tmp_i  = (int16_t*)allocate_and_clear_aligned(total_elements * sizeof(int16_t), 64);
-
     #pragma omp parallel for
-    for (int i = 0; i < total_elements; i++) {
-        cube_r[i] = (int16_t)(lut_r[i] * 2048.0f); cube_i[i] = (int16_t)(lut_i[i] * 2048.0f);
-    }
-    out->actual_ram_mb = profiler_end_mem_mb(base_mem);
-    profiler_flush_cache(); 
-    
+    for (int i = 0; i < total_elements; i++) { cube_r[i] = (int16_t)(lut_r[i] * 2048.0f); cube_i[i] = (int16_t)(lut_i[i] * 2048.0f); }
+    out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_int16(cube_r, cube_i, n_samples, n_chirps, call_int16_r4);
     transpose_radar_cube_int16(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_int16_window(n_chirps)); 
     out->time_doppler = run_doppler_loop_int16(tmp_r, tmp_i, n_samples, n_chirps, call_int16_r4);
-
-    peak_search_int16_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
+    cfar_search_int16_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
     free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
 }

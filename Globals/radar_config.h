@@ -40,15 +40,8 @@ extern const double lambda_c;
 extern const double d_ant;
 
 // 전역 룩업 테이블(LUT) 및 윈도우 배열 선언
-extern int bitrev_4096[4096];
 extern int bitrev_2048[2048]; extern int bitrev_1024[1024]; extern int bitrev_512[512]; 
 extern int bitrev_256[256];   extern int bitrev_128[128];   extern int bitrev_64[64];
-
-// 🎯 [추가] Radix-4 및 Mixed-Radix 전용 리버설 배열
-extern int mixedrev_2048[2048]; // (Radix-2 1번 + Radix-4 5번 혼합)
-extern int digitrev_1024[1024]; // (순수 Radix-4)
-extern int mixedrev_512[512];   // (Radix-2 1번 + Radix-4 4번 혼합)
-extern int digitrev_256[256];   // (순수 Radix-4)
 
 // =========================================================================
 // [3] FLOAT 전용 Twiddle Factor 및 Window 테이블
@@ -72,7 +65,6 @@ extern float win_128[128];
 // [4] 🔥 INT16 전용 Twiddle Factor 테이블 (Q15 포맷)
 // =========================================================================
 // (Radix-8 분기문 제로화 가속을 위해 풀사이즈 N으로 할당)
-extern int16_t twiddle_int16_real_4096[4096]; extern int16_t twiddle_int16_imag_4096[4096];
 extern int16_t twiddle_int16_real_2048[2048]; extern int16_t twiddle_int16_imag_2048[2048];
 extern int16_t twiddle_int16_real_1024[1024]; extern int16_t twiddle_int16_imag_1024[1024];
 extern int16_t twiddle_int16_real_512[512];   extern int16_t twiddle_int16_imag_512[512];
@@ -83,7 +75,6 @@ extern int16_t twiddle_int16_real_64[64];     extern int16_t twiddle_int16_imag_
 // =========================================================================
 // [5] 🔥 INT16 전용 Hanning Window 테이블 (Q15 포맷)
 // =========================================================================
-extern int16_t win_int16_4096[4096];
 extern int16_t win_int16_2048[2048];
 extern int16_t win_int16_1024[1024];
 extern int16_t win_int16_512[512];

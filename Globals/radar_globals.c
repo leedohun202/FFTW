@@ -16,7 +16,6 @@ const double d_ant = (3e8 / 77e9) / 2.0;
 // =========================================================================
 // [2] Bit-Reversal 인덱스 테이블 (정수형/실수형 공용 사용)
 // =========================================================================
-int bitrev_4096[4096]; // 🔥 Radix-8 끝판왕 확장을 위한 신규 추가
 int bitrev_2048[2048]; 
 int bitrev_1024[1024]; 
 int bitrev_512[512]; 
@@ -24,10 +23,6 @@ int bitrev_256[256];
 int bitrev_128[128];   
 int bitrev_64[64];
 
-int mixedrev_2048[2048];
-int digitrev_1024[1024];
-int mixedrev_512[512];
-int digitrev_256[256];
 
 // =========================================================================
 // [3] FLOAT 전용 Twiddle Factor 및 Window 테이블 (기존 유지)
@@ -47,7 +42,6 @@ float win_512[512]; float win_256[256];   float win_128[128];
 // [4] 🔥 INT16 전용 Twiddle Factor 테이블 (신규 추가, Q15 포맷)
 // =========================================================================
 // (Radix-8 분기문 제로화(Zero-branch) 가속을 위해 풀사이즈 N으로 할당)
-int16_t twiddle_int16_real_4096[4096]; int16_t twiddle_int16_imag_4096[4096];
 int16_t twiddle_int16_real_2048[2048]; int16_t twiddle_int16_imag_2048[2048];
 int16_t twiddle_int16_real_1024[1024]; int16_t twiddle_int16_imag_1024[1024];
 int16_t twiddle_int16_real_512[512];   int16_t twiddle_int16_imag_512[512];
@@ -59,7 +53,6 @@ int16_t twiddle_int16_real_64[64];     int16_t twiddle_int16_imag_64[64];
 // [5] 🔥 INT16 전용 Hanning Window 테이블 (신규 추가, Q15 포맷)
 // =========================================================================
 // (ADC 원시 데이터에 바로 정수 곱셈을 때리기 위한 배열)
-int16_t win_int16_4096[4096];
 int16_t win_int16_2048[2048]; 
 int16_t win_int16_1024[1024]; 
 int16_t win_int16_512[512]; 

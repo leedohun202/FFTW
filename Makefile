@@ -1,50 +1,76 @@
+# ====================================================================
+# 🛰️ 3D Radar Pipeline: 완전 자율형 개별 유닛 가속 빌드 시스템
+# ====================================================================
+
 CC = gcc
+
+# 🔥 [라즈베리파이 5 네이티브 가속 옵션 수용 - A76 명시]
 CFLAGS = -O3 -mcpu=cortex-a76 -mtune=cortex-a76 -ffast-math -ftree-vectorize -fopenmp -Wall \
-         -I./Globals -I./FFT  -I./FFT_int16 -I./FFT_RADIX4 -I./Pipeline -I./Utils
-LDFLAGS = -lfftw3f -lfftw3f_threads -lpthread -lm
+         -I./Globals -I./FFT -I./FFT_int16 -I./FFT_RADIX4 -I./Pipeline -I./Utils
 
-# 🎯 타겟 바이너리 정의
-TARGET_EST  = radar_test_est
-TARGET_MEAS = radar_test_meas
-TARGET_PAT  = radar_test_pat
+# 🧵 [OpenMP와 라이브러리 자원 충돌 방지 통합 플래그]
+LDFLAGS = -lfftw3f -lfftw3f_threads -lpthread -lm -fopenmp
 
-SRCS = main.c \
-       $(wildcard Globals/*.c) \
-       $(wildcard FFT/*.c) \
-       $(wildcard Pipeline/*.c) \
-       $(wildcard Utils/*.c) \
-	   $(wildcard FFT_RADIX4/*.c) \
-	   $(wildcard FFT_int16/*.c) \
-	   $(wildcard FFT_int16_RADIX4/*.c)
-OBJS = $(SRCS:.c=.o)
+# ====================================================================
+# 📦 공통 오브젝트 자동 탐지 (와일드카드 & 필터링 안전 매핑)
+# ====================================================================
+# 1. 모든 관련 폴더의 .c 파일을 싹 긁어옵니다.
+ALL_SRCS = $(wildcard Globals/*.c) \
+           $(wildcard FFT/*.c) \
+           $(wildcard Pipeline/*.c) \
+           $(wildcard FFT_RADIX4/*.c) \
+           $(wildcard FFT_int16/*.c) \
+           $(wildcard FFT_int16_RADIX4/*.c) \
+           $(wildcard Utils/*.c)
 
-# 1️⃣ 기본 타겟 (ESTIMATE 모드: 0.1초 탈출 디버깅용)
-all: CFLAGS += -DFFTW_MODE_ESTIMATE
-all: clean_objs $(TARGET_EST)
+# 2. 💥 [핵심 필터링] 그 중에서 'run_' 이나 'main_' 으로 시작하는 
+#    런처(Launcher) 전용 C 파일들은 공통 오브젝트에서 쏙 뺍니다! (충돌 원천 차단)
+COMMON_SRCS = $(ALL_SRCS)
 
-$(TARGET_EST): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET_EST) $(OBJS) $(LDFLAGS)
+COMMON_OBJS = $(COMMON_SRCS:.c=.o)
 
-# 2️⃣ MEASURE 타겟 (속도 측정 및 밸런스 모드)
-measure: CFLAGS += -DFFTW_MODE_MEASURE
-measure: clean_objs $(TARGET_MEAS)
+# ====================================================================
+# 🎯 바이너리 그룹 타겟 정의 (.PHONY)
+# ====================================================================
+.PHONY: all fftw3 custom clean
 
-$(TARGET_MEAS): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET_MEAS) $(OBJS) $(LDFLAGS)
+all: fftw3 custom
 
-# 3️⃣ PATIENT 타겟 (극한의 고문 및 최종 릴리즈 모드)
-patient: CFLAGS += -DFFTW_MODE_PATIENT
-patient: clean_objs $(TARGET_PAT)
+fftw3: radar_test_fftw3_est radar_test_fftw3_meas radar_test_fftw3_pat
+custom: radar_test_float_r2 radar_test_float_r4 radar_test_int16_r2 radar_test_int16_r4
 
-$(TARGET_PAT): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET_PAT) $(OBJS) $(LDFLAGS)
+# ====================================================================
+# 🎯 [1] FFTW3 진영: 3가지 플래닝 모드별 개별 사출 규칙
+# ====================================================================
+radar_test_fftw3_est: Main/main_fftw3_estimate.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
-# 패턴 규칙 및 빌드 전 안전 세탁
+radar_test_fftw3_meas: Main/main_fftw3_measure.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+radar_test_fftw3_pat: Main/main_fftw3_patient.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# ====================================================================
+# 🎯 [2] Custom 가속기 진영: 독자적인 단일 Standalone 사출 규칙
+# ====================================================================
+radar_test_float_r2: Main/main_float_r2.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+radar_test_float_r4: Main/main_float_r4.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+radar_test_int16_r2: Main/main_int16_r2.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+radar_test_int16_r4: Main/main_int16_r4.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# ====================================================================
+# 🧼 일반 컴파일 패턴 규칙 및 청소
+# ====================================================================
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-clean_objs:
-	rm -f $(OBJS)
-
 clean:
-	rm -f $(OBJS) $(TARGET_EST) $(TARGET_MEAS) $(TARGET_PAT)
+	rm -f $(COMMON_OBJS) radar_test_* Utils/run_*.o

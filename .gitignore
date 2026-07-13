@@ -6,6 +6,8 @@ build/
 radar_test
 
 mains/
+FFT_int16
+FFT_RADIX4
 
 *.wisdom.backup
 *.wisdom.tmp

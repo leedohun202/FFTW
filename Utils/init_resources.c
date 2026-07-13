@@ -20,14 +20,6 @@ void init_resources() {
     // [1] Bit-Reversal 주소 테이블 초기화
     // =========================================================================
     
-    // 4096 크기 (12 bits)
-    for (int i = 0; i < 4096; i++) { 
-        int j = 0; 
-        for (int b = 0; b < 12; b++) {
-            if (i & (1 << b)) j |= (1 << (11 - b)); 
-        }
-        bitrev_4096[i] = j; 
-    }
 
     // 2048 크기 (11 bits)
     for (int i = 0; i < 2048; i++) { 
@@ -83,48 +75,6 @@ void init_resources() {
         bitrev_64[i] = j;   
     }
 
-    // 🎯 1. [1024 포인트] 순수 Radix-4 (Base-4 Digit Reversal)
-    for (int i = 0; i < 1024; i++) {
-        int temp = i, rev = 0;
-        for (int j = 0; j < 5; j++) { // 4^5 = 1024
-            rev = (rev << 2) | (temp & 3); // 2비트씩 묶어서 뒤집기
-            temp >>= 2;
-        }
-        digitrev_1024[i] = rev;
-    }
-
-    // 🎯 2. [2048 포인트] 혼합 기수 (Radix-2 + Radix-4 5번)
-    for (int i = 0; i < 2048; i++) {
-        int temp = i, rev = 0;
-        for (int j = 0; j < 5; j++) { // 4^5 블록
-            rev = (rev << 2) | (temp & 3);
-            temp >>= 2;
-        }
-        rev = (rev << 1) | (temp & 1); // 마지막 1비트(Radix-2) 처리
-        mixedrev_2048[i] = rev;
-    }
-
-    // 🎯 3. [512 포인트] 혼합 기수 (Radix-2 + Radix-4 4번)
-    for (int i = 0; i < 512; i++) {
-        int temp = i, rev = 0;
-        for (int j = 0; j < 4; j++) { // 4^4 블록
-            rev = (rev << 2) | (temp & 3);
-            temp >>= 2;
-        }
-        rev = (rev << 1) | (temp & 1); // 마지막 1비트 처리
-        mixedrev_512[i] = rev;
-    }
-
-    // 🎯 1. [1024 포인트] 순수 Radix-4 (Base-4 Digit Reversal)
-    for (int i = 0; i < 256; i++) {
-        int temp = i, rev = 0;
-        for (int j = 0; j < 4; j++) { // 4^5 = 1024
-            rev = (rev << 2) | (temp & 3); // 2비트씩 묶어서 뒤집기
-            temp >>= 2;
-        }
-        digitrev_256[i] = rev;
-    }
-
 
     // =========================================================================
     // [2] FLOAT 삼각함수 (Twiddle Factor) 및 윈도우 초기화
@@ -171,12 +121,6 @@ void init_resources() {
     // =========================================================================
     // 주의: Radix-8 분기 제거를 위해 N/2가 아닌 풀사이즈(N)로 생성합니다.
     
-    // 4096 크기
-    for (int i = 0; i < 4096; i++) {
-        twiddle_int16_real_4096[i] = (int16_t)round(cos(-2.0 * PI * i / 4096) * 32767.0);
-        twiddle_int16_imag_4096[i] = (int16_t)round(sin(-2.0 * PI * i / 4096) * 32767.0);
-        win_int16_4096[i] = (int16_t)round((0.5 * (1.0 - cos(2.0 * PI * i / (4096 - 1)))) * 32767.0);
-    }
 
     // 2048 크기
     for (int i = 0; i < 2048; i++) {
