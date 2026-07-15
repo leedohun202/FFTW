@@ -35,8 +35,10 @@ float twiddle_real_256[128];   float twiddle_imag_256[128];
 float twiddle_real_128[64];    float twiddle_imag_128[64];
 float twiddle_real_64[32];     float twiddle_imag_64[32];
 
-float win_2048[2048]; float win_1024[1024]; 
-float win_512[512]; float win_256[256];   float win_128[128]; 
+float win_2048[2048]; float win_1024[1024]; float win_512[512]; 
+float win_256[256];   float win_128[128];
+
+float doa_angle_lut_256[256];
 
 // =========================================================================
 // [4] 🔥 INT16 전용 Twiddle Factor 테이블 (신규 추가, Q15 포맷)

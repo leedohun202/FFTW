@@ -20,7 +20,7 @@
 // 레이더 파이프라인 상수
 #define PI 3.14159265358979323846
 #define N_CHIRPS    512   
-#define N_ANTENNAS  4     
+#define N_ANTENNAS  8
 #define N_ANGLE     64    
 #define MAX_DETECTED 10
 #define BENCH_RUNS  10 
@@ -60,6 +60,9 @@ extern float win_1024[1024];
 extern float win_512[512];
 extern float win_256[256];
 extern float win_128[128];
+extern float win_64[64];
+
+extern float doa_angle_lut_256[256];
 
 // =========================================================================
 // [4] 🔥 INT16 전용 Twiddle Factor 테이블 (Q15 포맷)

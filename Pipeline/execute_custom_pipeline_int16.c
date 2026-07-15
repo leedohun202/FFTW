@@ -2,12 +2,14 @@
 #include "radar_fft.h"
 #include "radar_config.h"
 #include <stddef.h>
+#include <stdlib.h> // abs() 함수 사용을 위해 추가
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
 // -------------------------------------------------------------
-// [1] 기존 Int16 Radix-2 파이프라인 (백업 및 비교용)
+// [1] 기존 Int16 Radix-2 파이프라인 
 // -------------------------------------------------------------
 void execute_custom_pipeline_int16(int16_t *__restrict__ cube_real, int16_t *__restrict__ cube_imag, 
                                    int16_t *__restrict__ tmp_real, int16_t *__restrict__ tmp_imag, 
@@ -18,10 +20,12 @@ void execute_custom_pipeline_int16(int16_t *__restrict__ cube_real, int16_t *__r
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int c = 0; c < n_chirps; c++) {
             int offset = ant * (n_samples * n_chirps) + c * n_samples;
+            
+            // 💥 [패치] Range FFT는 아직 분리 전이므로 무조건 안전 모드(0) 고정
             if (n_samples == 2048) custom_fft_2048_int16(&cube_real[offset], &cube_imag[offset]);
             else if (n_samples == 1024) custom_fft_1024_int16(&cube_real[offset], &cube_imag[offset]);
-            else if (n_samples == 512)  custom_fft_512_int16(&cube_real[offset], &cube_imag[offset]);
-            else if (n_samples == 256)  custom_fft_256_int16(&cube_real[offset], &cube_imag[offset]);
+            else if (n_samples == 512)  custom_fft_512_int16(&cube_real[offset], &cube_imag[offset], 0);
+            else if (n_samples == 256)  custom_fft_256_int16(&cube_real[offset], &cube_imag[offset], 0);
             else if (n_samples == 128)  custom_fft_128_int16(&cube_real[offset], &cube_imag[offset]);
             else if (n_samples == 64)   custom_fft_64_int16(&cube_real[offset], &cube_imag[offset]);
         }
@@ -40,8 +44,21 @@ void execute_custom_pipeline_int16(int16_t *__restrict__ cube_real, int16_t *__r
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int r = 0; r < n_samples; r++) {
             int offset = ant * (n_samples * n_chirps) + r * n_chirps;
-            if (n_chirps == 512)      custom_fft_512_int16(&tmp_real[offset], &tmp_imag[offset]);
-            else if (n_chirps == 256) custom_fft_256_int16(&tmp_real[offset], &tmp_imag[offset]);
+            
+            // 💥 [패치] 도플러 스캔: 해당 거리 빈(Range Bin)의 최댓값 탐색
+            int16_t max_val = 0;
+            for (int c = 0; c < n_chirps; c++) {
+                int16_t abs_r = abs(tmp_real[offset + c]);
+                int16_t abs_i = abs(tmp_imag[offset + c]);
+                if (abs_r > max_val) max_val = abs_r;
+                if (abs_i > max_val) max_val = abs_i;
+            }
+            
+            // 💥 [패치] 스케일링 생략 여부 결정 (오버플로우 안전 구역 판단)
+            int skip_shift = (max_val < 8192) ? 1 : 0;
+
+            if (n_chirps == 512)      custom_fft_512_int16(&tmp_real[offset], &tmp_imag[offset], skip_shift);
+            else if (n_chirps == 256) custom_fft_256_int16(&tmp_real[offset], &tmp_imag[offset], skip_shift);
             else if (n_chirps == 128) custom_fft_128_int16(&tmp_real[offset], &tmp_imag[offset]);
             else if (n_chirps == 64)  custom_fft_64_int16(&tmp_real[offset], &tmp_imag[offset]);
         }
@@ -60,10 +77,12 @@ void execute_custom_pipeline_int16_radix4(int16_t *__restrict__ cube_real, int16
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int c = 0; c < n_chirps; c++) {
             int offset = ant * (n_samples * n_chirps) + c * n_samples;
+            
+            // 💥 [패치] Range FFT 무조건 안전 모드(0) 고정
             if (n_samples == 2048) custom_fft_2048_int16_radix4(&cube_real[offset], &cube_imag[offset]);
             else if (n_samples == 1024) custom_fft_1024_int16_radix4(&cube_real[offset], &cube_imag[offset]);
-            else if (n_samples == 512)  custom_fft_512_int16_radix4(&cube_real[offset], &cube_imag[offset]);
-            else if (n_samples == 256)  custom_fft_256_int16_radix4(&cube_real[offset], &cube_imag[offset]);
+            else if (n_samples == 512)  custom_fft_512_int16_radix4(&cube_real[offset], &cube_imag[offset], 0);
+            else if (n_samples == 256)  custom_fft_256_int16_radix4(&cube_real[offset], &cube_imag[offset], 0);
             else if (n_samples == 128)  custom_fft_128_int16_radix4(&cube_real[offset], &cube_imag[offset]);
             else if (n_samples == 64)   custom_fft_64_int16_radix4(&cube_real[offset], &cube_imag[offset]);
         }
@@ -82,8 +101,21 @@ void execute_custom_pipeline_int16_radix4(int16_t *__restrict__ cube_real, int16
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int r = 0; r < n_samples; r++) {
             int offset = ant * (n_samples * n_chirps) + r * n_chirps;
-            if (n_chirps == 512)      custom_fft_512_int16_radix4(&tmp_real[offset], &tmp_imag[offset]);
-            else if (n_chirps == 256) custom_fft_256_int16_radix4(&tmp_real[offset], &tmp_imag[offset]);
+            
+            // 💥 [패치] 도플러 스캔: 해당 거리 빈(Range Bin)의 최댓값 탐색
+            int16_t max_val = 0;
+            for (int c = 0; c < n_chirps; c++) {
+                int16_t abs_r = abs(tmp_real[offset + c]);
+                int16_t abs_i = abs(tmp_imag[offset + c]);
+                if (abs_r > max_val) max_val = abs_r;
+                if (abs_i > max_val) max_val = abs_i;
+            }
+            
+            // 💥 [패치] 스케일링 생략 여부 결정 (오버플로우 방어막)
+            int skip_shift = (max_val < 8192) ? 1 : 0;
+
+            if (n_chirps == 512)      custom_fft_512_int16_radix4(&tmp_real[offset], &tmp_imag[offset], skip_shift);
+            else if (n_chirps == 256) custom_fft_256_int16_radix4(&tmp_real[offset], &tmp_imag[offset], skip_shift);
             else if (n_chirps == 128) custom_fft_128_int16_radix4(&tmp_real[offset], &tmp_imag[offset]);
             else if (n_chirps == 64)  custom_fft_64_int16_radix4(&tmp_real[offset], &tmp_imag[offset]);
         }

@@ -7,12 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fftw3.h>
-#include <omp.h>  // 💥 OpenMP 헤더 추가
+#include <omp.h>  
 
 void execute_standalone_run(int n_samples, int n_chirps) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
     size_t alloc_size_float = total_elements * sizeof(float);
 
+    // 💥 회원님의 완벽한 64바이트 정렬 메모리 할당 (NEON 가속 극대화)
     float *lut_r = NULL; float *lut_i = NULL;
     posix_memalign((void**)&lut_r, 64, alloc_size_float);
     posix_memalign((void**)&lut_i, 64, alloc_size_float);
@@ -29,12 +30,19 @@ void execute_standalone_run(int n_samples, int n_chirps) {
     printf(" ⏱️  연산 속도: Range FFT = %6.2f ms | Doppler FFT = %6.2f ms\n", res.time_range, res.time_doppler);
     printf(" 📈  물리 RAM 점유: %6.2f MB\n", res.actual_ram_mb);
     printf(" ---------------------------------------------------\n");
+    
+    // 💥 [수정] 하드코딩된 정답 비교(t<3)를 버리고, 자율 인지한 개수(num_targets)만큼 출력
     printf(" 🎯  100%% 자율 탐지 포인트 클라우드 결과:\n");
-    for(int t=0; t<3; t++) {
-        if(res.est_R[t] > 0.0) {
-            printf("   📍 [물체 %d] 거리: %6.3fm | 속도: %6.3fm/s | 각도: %7.3f°\n", t+1, res.est_R[t], res.est_v[t], res.est_a[t]);
-        } else {
-            printf("   ⚠️ [물체 %d] 탐지 실패 (Missed)\n", t+1);
+    if (res.num_targets == 0) {
+        printf("   ⚠️ 탐지된 유효 타겟이 없습니다.\n");
+    } else {
+        for(int i = 0; i < res.num_targets; i++) {
+            printf("   📍 [물체 %d] 거리: %7.3fm | 속도: %7.3fm/s | 각도: %7.3f° | SNR: %5.1f dB\n", 
+                   i + 1, 
+                   res.objects[i].distance, 
+                   res.objects[i].velocity, 
+                   res.objects[i].angle,
+                   res.objects[i].snr_db);
         }
     }
     printf(" ====================================================\n");
@@ -49,11 +57,12 @@ int main() {
     execute_standalone_run(1024, 512);
     execute_standalone_run(2048, 256);
     execute_standalone_run(2048, 512);
+
+    // 💡 프로그램 종료 전 FFTW 메모리 누수 방지
 #ifdef _OPENMP
     fftwf_cleanup_threads();
 #endif
     fftwf_cleanup();
     
-
     return 0;
 }

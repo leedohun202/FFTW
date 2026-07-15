@@ -162,4 +162,21 @@ void init_resources() {
         twiddle_int16_real_64[i] = (int16_t)round(cos(-2.0 * PI * i / 64) * 32767.0);
         twiddle_int16_imag_64[i] = (int16_t)round(sin(-2.0 * PI * i / 64) * 32767.0);
     }
+
+    // =========================================================================
+    // [4] 🔥 256포인트 초해상도 DoA 각도 복원용 LUT 초기화 (신규 추가)
+    // =========================================================================
+    for (int k = 0; k < 256; k++) {
+        // FFT Bin 인덱스를 부호 있는 공간 주파수 영역으로 언래핑
+        int fft_bin = (k >= 256 / 2) ? k - 256 : k;
+        
+        // 공간 주파수 $2\pi \cdot \frac{d}{\lambda} \sin(\theta)$ 역산
+        double sin_theta = (fft_bin / 256.0) * (lambda_c / d_ant);
+        
+        if (sin_theta > 1.0) sin_theta = 1.0;
+        else if (sin_theta < -1.0) sin_theta = -1.0;
+        
+        // 최종 각도 물리 좌표를 전역 마스터 테이블에 바인딩
+        doa_angle_lut_256[k] = (float)(asin(sin_theta) * 180.0 / PI);
+    }
 }

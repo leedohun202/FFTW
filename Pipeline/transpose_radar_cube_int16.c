@@ -38,9 +38,6 @@
 } while(0)
 #endif
 
-/**
- * @brief int16 고정소수점 전용 3D 레이더 큐브 전치 및 창함수 적용 (NEON 8x8 레지스터 블록 가속)
- */
 void transpose_radar_cube_int16(const int16_t *__restrict__ in_real, const int16_t *__restrict__ in_imag,
                                 int16_t *__restrict__ out_real, int16_t *__restrict__ out_imag,
                                 int n_samples, int n_chirps, const int16_t *__restrict__ win_int16) {
@@ -50,7 +47,6 @@ void transpose_radar_cube_int16(const int16_t *__restrict__ in_real, const int16
         for (int c_blk = 0; c_blk < n_chirps; c_blk += TILE_SIZE_INT16) {
             for (int r_blk = 0; r_blk < n_samples; r_blk += TILE_SIZE_INT16) {
                 
-                // 32x32 타일 내부를 다시 8x8 NEON 블록으로 잘게 쪼개어 처리
                 for (int c_chunk = c_blk; c_chunk < c_blk + TILE_SIZE_INT16; c_chunk += 8) {
                     for (int r_chunk = r_blk; r_chunk < r_blk + TILE_SIZE_INT16; r_chunk += 8) {
                         
@@ -58,7 +54,6 @@ void transpose_radar_cube_int16(const int16_t *__restrict__ in_real, const int16
                         int in_base  = ant * (n_chirps * n_samples);
                         int out_base = ant * (n_samples * n_chirps);
 
-                        // 1. [메모리 로드] 8개의 연속된 샘플(r)을 8개의 처프(c) 행에 걸쳐 읽어옴
                         int16x8_t vr0 = vld1q_s16(&in_real[in_base + (c_chunk + 0) * n_samples + r_chunk]);
                         int16x8_t vr1 = vld1q_s16(&in_real[in_base + (c_chunk + 1) * n_samples + r_chunk]);
                         int16x8_t vr2 = vld1q_s16(&in_real[in_base + (c_chunk + 2) * n_samples + r_chunk]);
@@ -77,7 +72,6 @@ void transpose_radar_cube_int16(const int16_t *__restrict__ in_real, const int16
                         int16x8_t vi6 = vld1q_s16(&in_imag[in_base + (c_chunk + 6) * n_samples + r_chunk]);
                         int16x8_t vi7 = vld1q_s16(&in_imag[in_base + (c_chunk + 7) * n_samples + r_chunk]);
 
-                        // 2. [초고속 윈도잉] vqdmulhq_s16: 곱셈 후 자동으로 >> 15 (반올림 포함) 처리하는 사기 명령어
                         if (win_int16 != NULL) {
                             vr0 = vqdmulhq_s16(vr0, vdupq_n_s16(win_int16[c_chunk + 0]));
                             vr1 = vqdmulhq_s16(vr1, vdupq_n_s16(win_int16[c_chunk + 1]));
@@ -98,11 +92,22 @@ void transpose_radar_cube_int16(const int16_t *__restrict__ in_real, const int16
                             vi7 = vqdmulhq_s16(vi7, vdupq_n_s16(win_int16[c_chunk + 7]));
                         }
 
-                        // 3. [레지스터 전치] 8x8 블록의 행과 열을 뒤집음
                         TRANSPOSE8x8_S16(vr0, vr1, vr2, vr3, vr4, vr5, vr6, vr7);
                         TRANSPOSE8x8_S16(vi0, vi1, vi2, vi3, vi4, vi5, vi6, vi7);
 
-                        // 4. [메모리 스토어] 전치된 상태이므로, 이제 r을 행으로 삼아 8개의 연속된 샘플(c)을 한 번에 저장!
+                        // 💥 [핵심 패치] Inter-stage Gain (심폐소생술)
+                        // Range FFT 과정에서 깎여나간 보행자 신호를 살리기 위해 8배(<< 3) 증폭합니다.
+                        // vqshlq_n_s16는 포화 연산(Saturating)을 지원하여 오버플로우 시 32767로 깎아줍니다.
+                        vr0 = vqshlq_n_s16(vr0, 3); vr1 = vqshlq_n_s16(vr1, 3);
+                        vr2 = vqshlq_n_s16(vr2, 3); vr3 = vqshlq_n_s16(vr3, 3);
+                        vr4 = vqshlq_n_s16(vr4, 3); vr5 = vqshlq_n_s16(vr5, 3);
+                        vr6 = vqshlq_n_s16(vr6, 3); vr7 = vqshlq_n_s16(vr7, 3);
+
+                        vi0 = vqshlq_n_s16(vi0, 3); vi1 = vqshlq_n_s16(vi1, 3);
+                        vi2 = vqshlq_n_s16(vi2, 3); vi3 = vqshlq_n_s16(vi3, 3);
+                        vi4 = vqshlq_n_s16(vi4, 3); vi5 = vqshlq_n_s16(vi5, 3);
+                        vi6 = vqshlq_n_s16(vi6, 3); vi7 = vqshlq_n_s16(vi7, 3);
+
                         vst1q_s16(&out_real[out_base + (r_chunk + 0) * n_chirps + c_chunk], vr0);
                         vst1q_s16(&out_real[out_base + (r_chunk + 1) * n_chirps + c_chunk], vr1);
                         vst1q_s16(&out_real[out_base + (r_chunk + 2) * n_chirps + c_chunk], vr2);
@@ -121,20 +126,28 @@ void transpose_radar_cube_int16(const int16_t *__restrict__ in_real, const int16
                         vst1q_s16(&out_imag[out_base + (r_chunk + 6) * n_chirps + c_chunk], vi6);
                         vst1q_s16(&out_imag[out_base + (r_chunk + 7) * n_chirps + c_chunk], vi7);
 #else
-                        // 비 ARM 환경을 위한 스칼라 Fallback
                         for (int c = c_chunk; c < c_chunk + 8; c++) {
                             int32_t w = (win_int16 != NULL) ? win_int16[c] : 32767;
                             for (int r = r_chunk; r < r_chunk + 8; r++) {
                                 int in_idx = ant * (n_chirps * n_samples) + c * n_samples + r;
                                 int out_idx = ant * (n_samples * n_chirps) + r * n_chirps + c;
+                                int32_t temp_r, temp_i;
 
                                 if (win_int16 != NULL) {
-                                    out_real[out_idx] = (int16_t)(((int32_t)in_real[in_idx] * w + 16384) >> 15);
-                                    out_imag[out_idx] = (int16_t)(((int32_t)in_imag[in_idx] * w + 16384) >> 15);
+                                    temp_r = ((int32_t)in_real[in_idx] * w + 16384) >> 15;
+                                    temp_i = ((int32_t)in_imag[in_idx] * w + 16384) >> 15;
                                 } else {
-                                    out_real[out_idx] = in_real[in_idx];
-                                    out_imag[out_idx] = in_imag[in_idx];
+                                    temp_r = in_real[in_idx];
+                                    temp_i = in_imag[in_idx];
                                 }
+
+                                // 💥 [핵심 패치] 스칼라 환경 심폐소생술 (포화 연산 포함)
+                                temp_r <<= 2; temp_i <<= 2;
+                                if (temp_r > 32767) temp_r = 32767; else if (temp_r < -32768) temp_r = -32768;
+                                if (temp_i > 32767) temp_i = 32767; else if (temp_i < -32768) temp_i = -32768;
+
+                                out_real[out_idx] = (int16_t)temp_r;
+                                out_imag[out_idx] = (int16_t)temp_i;
                             }
                         }
 #endif

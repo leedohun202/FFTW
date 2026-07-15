@@ -12,7 +12,6 @@ extern int16_t twiddle_int16_imag_1024[];
 void custom_fft_1024_int16_radix4(int16_t *__restrict__ r, int16_t *__restrict__ i) {
     const int N = 1024;
 
-    // 1. Bit-Reversal (Radix-2 방식 그대로 유지)
     for (int k = 0; k < N; k++) {
         int rev = bitrev_1024[k];
         if (k < rev) {
@@ -21,13 +20,10 @@ void custom_fft_1024_int16_radix4(int16_t *__restrict__ r, int16_t *__restrict__
         }
     }
 
-    // 2. Radix-4 NEON Butterfly
     for (int step = 4; step <= N; step <<= 2) {
         int n4 = step >> 2; 
         int twiddle_stride = N / step; 
 
-        // step이 4 또는 16일 때는 n4가 8 미만이므로 NEON 벡터 루프를 돌릴 수 없음.
-        // 따라서 초기 2개 스테이지는 순수 C로 처리 (연산량이 극히 적어 속도에 영향 없음)
         if (step == 4 || step == 16) {
             for (int j = 0; j < n4; j++) {
                 int idx1 = j * twiddle_stride;
@@ -65,16 +61,16 @@ void custom_fft_1024_int16_radix4(int16_t *__restrict__ r, int16_t *__restrict__
                     int32_t t_i0 = i[i0] + i_2;  int32_t t_i1 = i[i0] - i_2;
                     int32_t t_i2 = i_1 + i_3;    int32_t t_i3 = i_1 - i_3;
 
-                    r[i0] = (t_r0 + t_r2) >> 2; i[i0] = (t_i0 + t_i2) >> 2;
-                    r[i1] = (t_r1 + t_i3) >> 2; i[i1] = (t_i1 - t_r3) >> 2;
-                    r[i2] = (t_r0 - t_r2) >> 2; i[i2] = (t_i0 - t_i2) >> 2;
-                    r[i3] = (t_r1 - t_i3) >> 2; i[i3] = (t_i1 + t_r3) >> 2;
+                    // 💥 [스칼라 구간] 반올림(+2) 추가 (val + 2) >> 2
+                    r[i0] = (t_r0 + t_r2 + 2) >> 2; i[i0] = (t_i0 + t_i2 + 2) >> 2;
+                    r[i1] = (t_r1 + t_i3 + 2) >> 2; i[i1] = (t_i1 - t_r3 + 2) >> 2;
+                    r[i2] = (t_r0 - t_r2 + 2) >> 2; i[i2] = (t_i0 - t_i2 + 2) >> 2;
+                    r[i3] = (t_r1 - t_i3 + 2) >> 2; i[i3] = (t_i1 + t_r3 + 2) >> 2;
                 }
             }
         } 
         else {
 #ifdef __aarch64__
-            // 🚀 본격적인 NEON 가속 구간 (step 64, 256, 1024)
             for (int j = 0; j < n4; j += 8) {
                 int16_t c1_a[8], s1_a[8], c2_a[8], s2_a[8], c3_a[8], s3_a[8];
                 for (int lane = 0; lane < 8; lane++) {
@@ -107,7 +103,6 @@ void custom_fft_1024_int16_radix4(int16_t *__restrict__ r, int16_t *__restrict__
                     int16x8_t vr0 = vld1q_s16(&r[base]);
                     int16x8_t vi0 = vld1q_s16(&i[base]);
                     
-                    // 🟢 핵심 트릭: 메모리를 엇갈려서 읽기 (i2를 r1에, i1을 r2에)
                     int16x8_t vr1_in = vld1q_s16(&r[base + 2 * n4]);
                     int16x8_t vi1_in = vld1q_s16(&i[base + 2 * n4]);
                     int16x8_t vr2_in = vld1q_s16(&r[base + n4]);
@@ -116,39 +111,46 @@ void custom_fft_1024_int16_radix4(int16_t *__restrict__ r, int16_t *__restrict__
                     int16x8_t vr3_in = vld1q_s16(&r[base + 3 * n4]);
                     int16x8_t vi3_in = vld1q_s16(&i[base + 3 * n4]);
 
-                    // 🟢 vqdmulhq_s16: 두 값을 곱한 뒤 스스로 >> 15 처리를 해주는 사기 명령어
                     int16x8_t vr1_t = vqsubq_s16(vqdmulhq_s16(vr1_in, vc1), vqdmulhq_s16(vi1_in, vs1));
                     int16x8_t vi_1  = vqaddq_s16(vqdmulhq_s16(vr1_in, vs1), vqdmulhq_s16(vi1_in, vc1));
-
                     int16x8_t vr2_t = vqsubq_s16(vqdmulhq_s16(vr2_in, vc2), vqdmulhq_s16(vi2_in, vs2));
                     int16x8_t vi_2  = vqaddq_s16(vqdmulhq_s16(vr2_in, vs2), vqdmulhq_s16(vi2_in, vc2));
-
                     int16x8_t vr3_t = vqsubq_s16(vqdmulhq_s16(vr3_in, vc3), vqdmulhq_s16(vi3_in, vs3));
                     int16x8_t vi_3  = vqaddq_s16(vqdmulhq_s16(vr3_in, vs3), vqdmulhq_s16(vi3_in, vc3));
 
-                    // Radix-4 나비 연산 결합
-                    int16x8_t tr0 = vqaddq_s16(vr0, vr2_t);
-                    int16x8_t tr1 = vqsubq_s16(vr0, vr2_t);
-                    int16x8_t tr2 = vqaddq_s16(vr1_t, vr3_t);
-                    int16x8_t tr3 = vqsubq_s16(vr1_t, vr3_t);
+                    // 💥 [NEON 구간] 하드웨어 반올림 (vrshrq) 적용
+                    int16x8_t sr0 = vrshrq_n_s16(vr0, 1);
+                    int16x8_t si0 = vrshrq_n_s16(vi0, 1);
+                    int16x8_t sr1_t = vrshrq_n_s16(vr1_t, 1);
+                    int16x8_t si_1  = vrshrq_n_s16(vi_1, 1);
+                    int16x8_t sr2_t = vrshrq_n_s16(vr2_t, 1);
+                    int16x8_t si_2  = vrshrq_n_s16(vi_2, 1);
+                    int16x8_t sr3_t = vrshrq_n_s16(vr3_t, 1);
+                    int16x8_t si_3  = vrshrq_n_s16(vi_3, 1);
 
-                    int16x8_t ti0 = vqaddq_s16(vi0, vi_2);
-                    int16x8_t ti1 = vqsubq_s16(vi0, vi_2);
-                    int16x8_t ti2 = vqaddq_s16(vi_1, vi_3);
-                    int16x8_t ti3 = vqsubq_s16(vi_1, vi_3);
+                    int16x8_t tr0 = vaddq_s16(sr0, sr2_t);
+                    int16x8_t tr1 = vsubq_s16(sr0, sr2_t);
+                    int16x8_t tr2 = vaddq_s16(sr1_t, sr3_t);
+                    int16x8_t tr3 = vsubq_s16(sr1_t, sr3_t);
 
-                    // 🟢 vshrq_n_s16: 연산이 끝난 8개의 데이터를 동시에 >> 2 스케일링하여 저장
-                    vst1q_s16(&r[base], vshrq_n_s16(vqaddq_s16(tr0, tr2), 2));
-                    vst1q_s16(&i[base], vshrq_n_s16(vqaddq_s16(ti0, ti2), 2));
+                    int16x8_t ti0 = vaddq_s16(si0, si_2);
+                    int16x8_t ti1 = vsubq_s16(si0, si_2);
+                    int16x8_t ti2 = vaddq_s16(si_1, si_3);
+                    int16x8_t ti3 = vsubq_s16(si_1, si_3);
 
-                    vst1q_s16(&r[base + n4], vshrq_n_s16(vqaddq_s16(tr1, ti3), 2));
-                    vst1q_s16(&i[base + n4], vshrq_n_s16(vqsubq_s16(ti1, tr3), 2));
+                    tr0 = vrshrq_n_s16(tr0, 1); tr1 = vrshrq_n_s16(tr1, 1);
+                    tr2 = vrshrq_n_s16(tr2, 1); tr3 = vrshrq_n_s16(tr3, 1);
+                    ti0 = vrshrq_n_s16(ti0, 1); ti1 = vrshrq_n_s16(ti1, 1);
+                    ti2 = vrshrq_n_s16(ti2, 1); ti3 = vrshrq_n_s16(ti3, 1);
 
-                    vst1q_s16(&r[base + 2 * n4], vshrq_n_s16(vqsubq_s16(tr0, tr2), 2));
-                    vst1q_s16(&i[base + 2 * n4], vshrq_n_s16(vqsubq_s16(ti0, ti2), 2));
-
-                    vst1q_s16(&r[base + 3 * n4], vshrq_n_s16(vqsubq_s16(tr1, ti3), 2));
-                    vst1q_s16(&i[base + 3 * n4], vshrq_n_s16(vqaddq_s16(ti1, tr3), 2));
+                    vst1q_s16(&r[base], vaddq_s16(tr0, tr2));
+                    vst1q_s16(&i[base], vaddq_s16(ti0, ti2));
+                    vst1q_s16(&r[base + n4], vaddq_s16(tr1, ti3));
+                    vst1q_s16(&i[base + n4], vsubq_s16(ti1, tr3));
+                    vst1q_s16(&r[base + 2 * n4], vsubq_s16(tr0, tr2));
+                    vst1q_s16(&i[base + 2 * n4], vsubq_s16(ti0, ti2));
+                    vst1q_s16(&r[base + 3 * n4], vsubq_s16(tr1, ti3));
+                    vst1q_s16(&i[base + 3 * n4], vaddq_s16(ti1, tr3));
                 }
             }
 #endif

@@ -19,11 +19,13 @@
 #include <omp.h>
 #endif
 
-typedef void (*fft_func_float)(float*, float*, int);
-typedef void (*fft_func_int16)(int16_t*, int16_t*, int);
+#ifdef __aarch64__
+#include <arm_neon.h>
+#endif
 
-// 글로벌 정답 데이터 세팅 (실제 환경에서는 외부에서 불러옴)
-static const double mock_true_R[] = {12.50, 25.20,  6.80};
+// 💥 [패치] Int16 함수 포인터에 skip_shift(int) 인자 추가
+typedef void (*fft_func_float)(float*, float*, int);
+typedef void (*fft_func_int16)(int16_t*, int16_t*, int, int); 
 
 static inline const float* get_float_window(int size) {
     if (size == 2048) return win_2048;
@@ -61,24 +63,29 @@ static void call_float_r4(float *r, float *i, int n) {
     else if (n == 64)   custom_fft_64_radix4(r, i);    
 }
 
-static void call_int16_r2(int16_t *r, int16_t *i, int n) {
-    if (n == 2048)      custom_fft_2048_int16(r, i);
+// 💥 [패치] 유연한 대처: 512, 256에만 skip_shift 전달
+static void call_int16_r2(int16_t *r, int16_t *i, int n, int skip_shift) {
+    if (n == 2048)      custom_fft_2048_int16(r, i); 
     else if (n == 1024) custom_fft_1024_int16(r, i);
-    else if (n == 512)  custom_fft_512_int16(r, i);
-    else if (n == 256)  custom_fft_256_int16(r, i);
+    else if (n == 512)  custom_fft_512_int16(r, i, skip_shift);
+    else if (n == 256)  custom_fft_256_int16(r, i, skip_shift);
     else if (n == 128)  custom_fft_128_int16(r, i);
     else if (n == 64)   custom_fft_64_int16(r, i);
 }
 
-static void call_int16_r4(int16_t *r, int16_t *i, int n) {
+// 💥 [패치] 유연한 대처: 512, 256에만 skip_shift 전달
+static void call_int16_r4(int16_t *r, int16_t *i, int n, int skip_shift) {
     if (n == 2048)      custom_fft_2048_int16_radix4(r, i);
     else if (n == 1024) custom_fft_1024_int16_radix4(r, i);
-    else if (n == 512)  custom_fft_512_int16_radix4(r, i);
-    else if (n == 256)  custom_fft_256_int16_radix4(r, i);
+    else if (n == 512)  custom_fft_512_int16_radix4(r, i, skip_shift);
+    else if (n == 256)  custom_fft_256_int16_radix4(r, i, skip_shift);
     else if (n == 128)  custom_fft_128_int16_radix4(r, i);
     else if (n == 64)   custom_fft_64_int16_radix4(r, i);  
 }
 
+// ===================================================================================
+// 공통 루프 커널 (Range, Doppler)
+// ===================================================================================
 static double run_range_loop_float(float *cube_r, float *cube_i, int n_samples, int n_chirps, fft_func_float func) {
     double start = get_current_time_ms();
     const float* win = get_float_window(n_samples);
@@ -121,7 +128,8 @@ static double run_range_loop_int16(int16_t *cube_r, int16_t *cube_i, int n_sampl
                 cube_r[offset + n] = (int16_t)(((int32_t)cube_r[offset + n] * w) >> 15);
                 cube_i[offset + n] = (int16_t)(((int32_t)cube_i[offset + n] * w) >> 15);
             }
-            func(&cube_r[offset], &cube_i[offset], n_samples);
+            // 💥 [패치] Range 단계는 무조건 안전 모드(0) 강제 적용
+            func(&cube_r[offset], &cube_i[offset], n_samples, 0); 
         }
     }
     return get_current_time_ms() - start;
@@ -129,48 +137,107 @@ static double run_range_loop_int16(int16_t *cube_r, int16_t *cube_i, int n_sampl
 
 static double run_doppler_loop_int16(int16_t *tmp_r, int16_t *tmp_i, int n_samples, int n_chirps, fft_func_int16 func) {
     double start = get_current_time_ms();
+    
     #pragma omp parallel for collapse(2)
     for (int ant = 0; ant < N_ANTENNAS; ant++) {
         for (int r = 0; r < n_samples; r++) {
             int offset = ant * (n_samples * n_chirps) + r * n_chirps;
-            func(&tmp_r[offset], &tmp_i[offset], n_chirps);
+            
+            // 💥 [1단계: 선제적 맥스 스캔] 
+            int16_t max_val = 0;
+            for (int c = 0; c < n_chirps; c++) {
+                int16_t abs_r = abs(tmp_r[offset + c]);
+                int16_t abs_i = abs(tmp_i[offset + c]);
+                if (abs_r > max_val) max_val = abs_r;
+                if (abs_i > max_val) max_val = abs_i;
+            }
+            
+            // 💥 [2단계: 어댑티브 기준 설정 (8192)] 
+            int skip_shift = (max_val < 8192) ? 1 : 0;
+            
+            // 💥 [3단계: 가변형 가속 커널 호출]
+            func(&tmp_r[offset], &tmp_i[offset], n_chirps, skip_shift);
         }
     }
     return get_current_time_ms() - start;
 }
 
+// ===================================================================================
+// CFAR 탐지 래퍼 함수 
+// ===================================================================================
 static void cfar_search_float_cube(const float *tmp_r, const float *tmp_i, int n_samples, int n_chirps, BenchmarkResult *out) {
+    double start_time = get_current_time_ms();
     CFAR_Config cfg = { .guard_r = 4, .guard_d = 4, .train_r = 4, .train_d = 4, .alpha = 7.5f, .min_threshold = 1e-6f }; 
     CFAR_Target *targets = (CFAR_Target*)malloc(2000 * sizeof(CFAR_Target));
     float *pwr_map = (float*)malloc(n_samples * n_chirps * sizeof(float));
 
     int num_det = run_2d_ca_cfar_float(tmp_r, tmp_i, pwr_map, n_samples, n_chirps, cfg, targets, 2000);
-    extract_autonomous_objects(targets, num_det, tmp_r, tmp_i, n_samples, n_chirps, out, mock_true_R);
-    
+    out->num_targets = extract_autonomous_objects(targets, num_det, tmp_r, tmp_i, n_samples, n_chirps, out->objects, MAX_OUTPUT_TARGETS);
+    out->time_angle = get_current_time_ms() - start_time;
     free(pwr_map); free(targets);
 }
 
 static void cfar_search_int16_cube(const int16_t *tmp_r, const int16_t *tmp_i, int n_samples, int n_chirps, BenchmarkResult *out) {
-    CFAR_Config cfg = { .guard_r = 4, .guard_d = 4, .train_r = 4, .train_d = 4, .alpha = 4.5f, .min_threshold = 100.0f };
+    double start_time = get_current_time_ms();
+    CFAR_Config cfg = { .guard_r = 4, .guard_d = 4, .train_r = 4, .train_d = 4, .alpha = 8.0f, .min_threshold = 1e-6f };
     CFAR_Target *targets = (CFAR_Target*)malloc(2000 * sizeof(CFAR_Target));
     float *pwr_map = (float*)malloc(n_samples * n_chirps * sizeof(float));
-
-    int num_det = run_2d_ca_cfar_int16(tmp_r, tmp_i, pwr_map, n_samples, n_chirps, cfg, targets, 2000);
 
     int total = N_ANTENNAS * n_chirps * n_samples;
     float *f_tmp_r = (float*)malloc(total * sizeof(float));
     float *f_tmp_i = (float*)malloc(total * sizeof(float));
+    
+    float digital_gain = 256.0f; 
+#ifdef __aarch64__
+    // 💥 [NEON 가속] 한 번에 8개의 복소수를 동시에 캐스팅 및 증폭
+    #pragma omp parallel for
+    for (int i = 0; i < total; i += 8) {
+        // 1. Int16 데이터 8개 로드
+        int16x8_t vr_16 = vld1q_s16(&tmp_r[i]);
+        int16x8_t vi_16 = vld1q_s16(&tmp_i[i]);
+
+        // 2. 16비트를 32비트 정수로 확장 (하위 4개 / 상위 4개 분할)
+        int32x4_t vr_32_low  = vmovl_s16(vget_low_s16(vr_16));
+        int32x4_t vr_32_high = vmovl_high_s16(vr_16);
+        int32x4_t vi_32_low  = vmovl_s16(vget_low_s16(vi_16));
+        int32x4_t vi_32_high = vmovl_high_s16(vi_16);
+
+        // 3. 32비트 정수를 32비트 Float(실수)로 하드웨어 캐스팅
+        float32x4_t fr_low  = vcvtq_f32_s32(vr_32_low);
+        float32x4_t fr_high = vcvtq_f32_s32(vr_32_high);
+        float32x4_t fi_low  = vcvtq_f32_s32(vi_32_low);
+        float32x4_t fi_high = vcvtq_f32_s32(vi_32_high);
+
+        // 4. Digital Gain(256.0f) 벡터 곱셈
+        fr_low  = vmulq_n_f32(fr_low, digital_gain);
+        fr_high = vmulq_n_f32(fr_high, digital_gain);
+        fi_low  = vmulq_n_f32(fi_low, digital_gain);
+        fi_high = vmulq_n_f32(fi_high, digital_gain);
+
+        // 5. 변환 완료된 Float 데이터 메모리에 스트리밍 쓰기
+        vst1q_f32(&f_tmp_r[i], fr_low);
+        vst1q_f32(&f_tmp_r[i + 4], fr_high);
+        vst1q_f32(&f_tmp_i[i], fi_low);
+        vst1q_f32(&f_tmp_i[i + 4], fi_high);
+    }
+#else
+    // 기존 스칼라 백업 폴백 (Fallback)
     #pragma omp parallel for
     for(int i = 0; i < total; i++){
-        f_tmp_r[i] = (float)tmp_r[i]; f_tmp_i[i] = (float)tmp_i[i];
+        f_tmp_r[i] = (float)tmp_r[i] * digital_gain;
+        f_tmp_i[i] = (float)tmp_i[i] * digital_gain;
     }
+#endif
     
-    extract_autonomous_objects(targets, num_det, f_tmp_r, f_tmp_i, n_samples, n_chirps, out, mock_true_R);
+    int num_det = run_2d_ca_cfar_float(f_tmp_r, f_tmp_i, pwr_map, n_samples, n_chirps, cfg, targets, 2000);
+    out->num_targets = extract_autonomous_objects(targets, num_det, f_tmp_r, f_tmp_i, n_samples, n_chirps, out->objects, MAX_OUTPUT_TARGETS);
+    out->time_angle = get_current_time_ms() - start_time;
     
     free(f_tmp_r); free(f_tmp_i); free(pwr_map); free(targets);
 }
 
 static void cfar_search_fftw_cube(const fftwf_complex *tmp, int n_samples, int n_chirps, BenchmarkResult *out) {
+    double start_time = get_current_time_ms();
     CFAR_Config cfg = { .guard_r = 4, .guard_d = 4, .train_r = 4, .train_d = 4, .alpha = 7.5f, .min_threshold = 1e-6f }; 
     CFAR_Target *targets = (CFAR_Target*)malloc(2000 * sizeof(CFAR_Target));
     float *pwr_map = (float*)malloc(n_samples * n_chirps * sizeof(float));
@@ -187,40 +254,33 @@ static void cfar_search_fftw_cube(const fftwf_complex *tmp, int n_samples, int n
         f_tmp_i[i] = tmp[i][1];
     }
     
-    extract_autonomous_objects(targets, num_det, f_tmp_r, f_tmp_i, n_samples, n_chirps, out, mock_true_R);
+    out->num_targets = extract_autonomous_objects(targets, num_det, f_tmp_r, f_tmp_i, n_samples, n_chirps, out->objects, MAX_OUTPUT_TARGETS);
+    out->time_angle = get_current_time_ms() - start_time;
 
     free(f_tmp_r); free(f_tmp_i); free(pwr_map); free(targets);
 }
 
 // ===================================================================================
-// 💥 FFTW3 벤치마크
+// 벤치마크 세션: FFTW3
 // ===================================================================================
 void benchmark_session_fftw3(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out, unsigned int fftw_flags) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
     int base_mem = profiler_start_mem();
     
-    // 1. 메모리 할당 (64MB 유지)
     fftwf_complex *cube = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
     fftwf_complex *tmp  = (fftwf_complex *)fftwf_malloc(total_elements * sizeof(fftwf_complex));
 
-    // 💥 [핵심 수정] MEASURE의 정상적인 벤치마크를 위해 진짜 '노이즈 데이터'를 주입!
-    // (Subnormal Number 예외로 인한 벤치마크 왜곡을 방지합니다)
     #pragma omp parallel for
     for (int i = 0; i < total_elements; i++) {
-        cube[i][0] = lut_r[i]; 
-        cube[i][1] = lut_i[i];
-        // tmp 배열에도 노이즈를 넣어 Doppler 벤치마크 시 CPU 병목을 막아줍니다.
-        tmp[i][0]  = lut_r[i]; 
-        tmp[i][1]  = lut_i[i];
+        cube[i][0] = lut_r[i]; cube[i][1] = lut_i[i];
+        tmp[i][0]  = lut_r[i]; tmp[i][1]  = lut_i[i];
     }
 
 #ifdef _OPENMP
-    fftwf_init_threads(); // 스레드 엔진 초기화
-    fftwf_plan_with_nthreads(omp_get_max_threads()); // 가용 코어(4개) 전면 할당!
+    fftwf_init_threads();
+    fftwf_plan_with_nthreads(omp_get_max_threads());
 #endif
 
-    // 2. 일괄(Batch) 플랜 생성 
-    // (이제 MEASURE 모드가 실제 노이즈 데이터를 기반으로 가장 빠르고 정상적인 NEON 커널을 채택합니다!)
     int n_r[] = {n_samples};
     fftwf_plan p_range = fftwf_plan_many_dft(1, n_r, N_ANTENNAS * n_chirps,
                                              cube, NULL, 1, n_samples,
@@ -236,9 +296,6 @@ void benchmark_session_fftw3(const float *lut_r, const float *lut_i, int n_sampl
     out->actual_ram_mb = profiler_end_mem_mb(base_mem);
     profiler_flush_cache();
     
-    // ========================================================
-    // [1] Range FFT 데이터 세팅 (MEASURE가 파괴한 배열을 다시 실제 데이터와 윈도우로 복구)
-    // ========================================================
     double start_range = get_current_time_ms();
     const float* win_range = get_float_window(n_samples);
     
@@ -248,17 +305,12 @@ void benchmark_session_fftw3(const float *lut_r, const float *lut_i, int n_sampl
             int offset = ant * (n_chirps * n_samples) + ch * n_samples;
             for (int n = 0; n < n_samples; n++) {
                 float w = win_range ? win_range[n] : 1.0f;
-                // 다시 덮어씌우므로 안전합니다.
                 cube[offset + n][0] = lut_r[offset + n] * w;
                 cube[offset + n][1] = lut_i[offset + n] * w;
             }
         }
     }
-    
-    // 💥 가장 최적화된 진짜 플랜으로 일괄 연산!
     fftwf_execute(p_range);
-    
-    // (이후 코드는 동일하게 유지...)
     out->time_range = get_current_time_ms() - start_range;
 
     double start_doppler = get_current_time_ms();
@@ -282,7 +334,6 @@ void benchmark_session_fftw3(const float *lut_r, const float *lut_i, int n_sampl
             }
         }
     }
-
     fftwf_execute(p_doppler);
     out->time_doppler = get_current_time_ms() - start_doppler;
 
@@ -294,7 +345,7 @@ void benchmark_session_fftw3(const float *lut_r, const float *lut_i, int n_sampl
 }
 
 // -----------------------------------------------------------------------------------
-// 나머지 세션 (Float R2, Float R4, Int16 R2, Int16 R4)
+// 벤치마크 세션: Custom (Float, Int16)
 // -----------------------------------------------------------------------------------
 void benchmark_session_float_r2(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
     int total_elements = N_ANTENNAS * n_chirps * n_samples;
