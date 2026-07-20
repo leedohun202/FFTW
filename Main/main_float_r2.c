@@ -24,7 +24,6 @@ void execute_standalone_run(int n_samples, int n_chirps) {
     printf("\n 🛰️  [3D 독립 자율 인지 바이너리] Float Radix-2 | Size = %d x %d\n", n_samples, n_chirps);
     benchmark_session_float_r2(lut_r, lut_i, n_samples, n_chirps, &res);
 
-    printf(" ---------------------------------------------------\n");
     printf(" ⏱️  연산 속도: Range FFT = %6.2f ms | Doppler FFT = %6.2f ms\n", res.time_range, res.time_doppler);
     printf(" 📈  물리 RAM 점유: %6.2f MB\n", res.actual_ram_mb);
     printf(" ---------------------------------------------------\n");

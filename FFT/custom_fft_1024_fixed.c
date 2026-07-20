@@ -1,4 +1,4 @@
-#include "radar_fft.h"
+#include "myfft.h"
 
 /**
  * @brief 1024 포인트 1D 고속 푸리에 변환 (고정 크기 최적화)

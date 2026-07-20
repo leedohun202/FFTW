@@ -1,86 +1,52 @@
-# ====================================================================
-# 🛰️ 3D Radar Pipeline: 완전 자율형 개별 유닛 가속 빌드 시스템
-# ====================================================================
+# FFT demo — 두 백엔드로 빌드 가능
+#   make            커스텀 myfft (외부 의존성 없음) → ./fft_demo
+#   make run        커스텀 빌드 후 실행
+#   make fftw       실제 libfftw3f 링크        → ./fft_demo_fftw   (FFTW 설치 필요)
+#   make run-fftw   FFTW 빌드 후 실행
+#   make compare    두 백엔드 실행 결과를 diff (정확성 대조)
+#   make clean
 
-CC = gcc
+CC      ?= gcc
+CFLAGS  ?= -std=gnu11 -O2 -Wall -I.
+LDLIBS_COMMON = -lm
 
-# 🔥 [라즈베리파이 5 네이티브 가속 옵션 수용 - A76 명시]
-# 💡 [수정] 헤더 탐색 경로에 -I./Main 을 추가하여 testbench 헤더 유연성을 높였습니다.
-CFLAGS = -O3 -mcpu=cortex-a76 -mtune=cortex-a76 -ffast-math -ftree-vectorize -fopenmp -Wall \
-         -I./Globals -I./FFT -I./FFT_int16 -I./FFT_RADIX4 -I./Pipeline -I./Utils
+TARGET_CUSTOM = fft_demo
+TARGET_FFTW   = fft_demo_fftw
 
-# 🧵 [OpenMP와 라이브러리 자원 충돌 방지 통합 플래그]
-LDFLAGS = -lfftw3f -lfftw3f_threads -lpthread -lm -fopenmp
+RADAR_SRCS = $(wildcard Globals/*.c) $(wildcard FFT/*.c) $(wildcard FFT_RADIX4/*.c)
 
-# ====================================================================
-# 📦 공통 오브젝트 자동 탐지 (와일드카드 & 필터링 안전 매핑)
-# ====================================================================
-ALL_SRCS = $(wildcard Globals/*.c) \
-           $(wildcard FFT/*.c) \
-           $(wildcard Pipeline/*.c) \
-           $(wildcard FFT_RADIX4/*.c) \
-           $(wildcard FFT_int16/*.c) \
-           $(wildcard FFT_int16_RADIX4/*.c) \
-           $(wildcard Utils/*.c)
+.PHONY: all run fftw run-fftw compare clean
 
-COMMON_SRCS = $(ALL_SRCS)
+all: $(TARGET_CUSTOM)
 
-COMMON_OBJS = $(COMMON_SRCS:.c=.o)
+# --- 커스텀 백엔드 (기본, 무의존) ---
+$(TARGET_CUSTOM): demo.c myfft.c myfft.h fft_backend.h $(RADAR_SRCS)
+	$(CC) $(CFLAGS) demo.c myfft.c $(RADAR_SRCS) -o $(TARGET_CUSTOM) $(LDLIBS_COMMON)
 
-# ====================================================================
-# 🎯 바이너리 그룹 타겟 정의 (.PHONY)
-# ====================================================================
-# 💡 [수정] .PHONY 목록에 testbench를 추가했습니다.
-.PHONY: all fftw3 custom testbench clean
+run: $(TARGET_CUSTOM)
+	./$(TARGET_CUSTOM)
 
-all: fftw3 custom testbench
+# --- 실 FFTW 백엔드 (골든 레퍼런스) ---
+# demo 가 fftwf_init_threads 등을 호출하므로 -lfftw3f_threads -pthread 필요
+# (레이더 Makefile 의 링크 구성과 동일). 순서 주의: threads 를 먼저.
+LDLIBS_FFTW = -lfftw3f_threads -lfftw3f -pthread $(LDLIBS_COMMON)
+$(TARGET_FFTW): demo.c fft_backend.h
+	$(CC) $(CFLAGS) -DUSE_FFTW demo.c -o $(TARGET_FFTW) $(LDLIBS_FFTW)
 
-fftw3: radar_test_fftw3_est radar_test_fftw3_meas radar_test_fftw3_pat
-custom: radar_test_float_r2 radar_test_float_r4 radar_test_int16_r2 radar_test_int16_r4
+fftw: $(TARGET_FFTW)
 
-# ====================================================================
-# 🎯 [1] FFTW3 진영: 3가지 플래닝 모드별 개별 사출 규칙
-# ====================================================================
-radar_test_fftw3_est: Main/main_fftw3_estimate.c $(COMMON_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+run-fftw: $(TARGET_FFTW)
+	./$(TARGET_FFTW)
 
-radar_test_fftw3_meas: Main/main_fftw3_measure.c $(COMMON_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-
-radar_test_fftw3_pat: Main/main_fftw3_patient.c $(COMMON_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-
-# ====================================================================
-# 🎯 [2] Custom 가속기 진영: 독자적인 단일 Standalone 사출 규칙
-# ====================================================================
-radar_test_float_r2: Main/main_float_r2.c $(COMMON_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-
-radar_test_float_r4: Main/main_float_r4.c $(COMMON_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-
-radar_test_int16_r2: Main/main_int16_r2.c $(COMMON_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-
-radar_test_int16_r4: Main/main_int16_r4.c $(COMMON_OBJS)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-
-# ====================================================================
-# 🎯 [3] 💥 [신규 추가] 7대 엔진 통합 자율 인지 테스트벤치 사출 규칙
-# ====================================================================
-testbench: radar_testbench
-
-radar_testbench: Main/main_testbench.c $(COMMON_OBJS)
-	@echo "🚀 [Makefile] 7대 가속 엔진 통합 엣지케이스 테스트벤치 컴파일 중..."
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-	@echo "🟩 빌드 완료! ./radar_testbench 명령어로 실행하세요."
-
-# ====================================================================
-# 🧼 일반 컴파일 패턴 규칙 및 청소
-# ====================================================================
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+# --- 두 백엔드 출력 대조 ---
+compare: $(TARGET_CUSTOM) $(TARGET_FFTW)
+	@./$(TARGET_CUSTOM) > out_custom.txt; \
+	 ./$(TARGET_FFTW)   > out_fftw.txt; \
+	 sed '1d' out_custom.txt > c.txt; sed '1d' out_fftw.txt > f.txt; \
+	 if diff -q c.txt f.txt >/dev/null; then echo "OK: 커스텀 == FFTW (헤더 줄 제외 동일)"; \
+	 else echo "DIFF 발견:"; diff c.txt f.txt; fi; \
+	 rm -f c.txt f.txt
 
 clean:
-	rm -f $(COMMON_OBJS) radar_test_* radar_testbench Utils/run_*.o
-	@echo "🧹 [Makefile] 기존 실행 파일 및 오브젝트 가 청소되었습니다."
+	rm -f $(TARGET_CUSTOM) $(TARGET_FFTW) $(TARGET_CUSTOM).exe $(TARGET_FFTW).exe \
+	      out_custom.txt out_fftw.txt

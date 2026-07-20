@@ -20,6 +20,14 @@ void init_resources() {
     // [1] Bit-Reversal 주소 테이블 초기화
     // =========================================================================
     
+    // 4096 크기 (12 bits)
+    for (int i = 0; i < 4096; i++) { 
+        int j = 0; 
+        for (int b = 0; b < 12; b++) {
+            if (i & (1 << b)) j |= (1 << (11 - b)); 
+        }
+        bitrev_4096[i] = j; 
+    }
 
     // 2048 크기 (11 bits)
     for (int i = 0; i < 2048; i++) { 
@@ -75,46 +83,14 @@ void init_resources() {
         bitrev_64[i] = j;   
     }
 
-
-    // =========================================================================
-    // [2] FLOAT 삼각함수 (Twiddle Factor) 및 윈도우 초기화
-    // =========================================================================
-
-    for (int i = 0; i < 1024; i++) { // 2048 (Twiddle: 1024, Win: 2048)
-        twiddle_real_2048[i] = (float)cos(-2.0 * PI * i / 2048); 
-        twiddle_imag_2048[i] = (float)sin(-2.0 * PI * i / 2048); 
+    // 16 크기 (4 bits)
+    for (int i = 0; i < 16; i++) { 
+        int j = 0; 
+        for (int b = 0; b < 4; b++) {
+            if (i & (1 << b)) j |= (1 << (3 - b));  
+        }
+        bitrev_16[i] = j;   
     }
-    for (int i = 0; i < 2048; i++) win_2048[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (2048 - 1)));
-    
-    for (int i = 0; i < 512; i++) { // 1024 (Twiddle: 512, Win: 1024)
-        twiddle_real_1024[i] = (float)cos(-2.0 * PI * i / 1024); 
-        twiddle_imag_1024[i] = (float)sin(-2.0 * PI * i / 1024); 
-    }
-    for (int i = 0; i < 1024; i++) win_1024[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (1024 - 1)));
-
-    for (int i = 0; i < 256; i++) { // 512 (Twiddle: 256, Win: 512)
-        twiddle_real_512[i]  = (float)cos(-2.0 * PI * i / 512);  
-        twiddle_imag_512[i]  = (float)sin(-2.0 * PI * i / 512); 
-    }
-    for (int i = 0; i < 512; i++) win_512[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (512 - 1)));
-
-    for (int i = 0; i < 128; i++) { // 256 (Twiddle: 128, Win: 256)
-        twiddle_real_256[i]  = (float)cos(-2.0 * PI * i / 256);  
-        twiddle_imag_256[i]  = (float)sin(-2.0 * PI * i / 256); 
-    }
-    for (int i = 0; i < 256; i++) win_256[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (256 - 1)));
-
-    for (int i = 0; i < 64; i++) { // 128 (Twiddle: 64, Win: 128)
-        twiddle_real_128[i]  = (float)cos(-2.0 * PI * i / 128);  
-        twiddle_imag_128[i]  = (float)sin(-2.0 * PI * i / 128); 
-    }
-    for (int i = 0; i < 128; i++) win_128[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (128 - 1)));
-
-    for (int i = 0; i < 32; i++) { // 64 (Twiddle: 32)
-        twiddle_real_64[i]   = (float)cos(-2.0 * PI * i / 64);   
-        twiddle_imag_64[i]   = (float)sin(-2.0 * PI * i / 64); 
-    }
-
 
     // =========================================================================
     // [3] 🔥 INT16 고정소수점(Q15 포맷) 전용 테이블 초기화

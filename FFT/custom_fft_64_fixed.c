@@ -1,5 +1,4 @@
-#include "radar_config.h"
-#include "radar_fft.h"
+#include "myfft.h"
 
 /**
  * @brief 64 포인트 1D 고속 푸리에 변환 (극한의 루프 풀기 및 NEON 가속 버전)

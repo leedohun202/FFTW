@@ -30,6 +30,6 @@ TestCase edge_cases[] = {
         .case_name = "4. Pure Noise / Zero Target Environment",
         .num_targets = 0, // 💥 아무것도 없음 (오탐지 방어선 테스트)
     }
-};
+}
 
-int num_edge_cases = sizeof(edge_cases) / sizeof(TestCase);
+;int num_edge_cases = sizeof(edge_cases) / sizeof(TestCase);

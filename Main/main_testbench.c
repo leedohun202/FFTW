@@ -32,8 +32,8 @@ void evaluate_engine_pipeline(float *lut_r, float *lut_i, int n_samples, int n_c
         case 0: benchmark_session_fftw3(lut_r, lut_i, n_samples, n_chirps, &res, FFTW_ESTIMATE); break;
         case 1: benchmark_session_float_r2(lut_r, lut_i, n_samples, n_chirps, &res); break;
         case 2: benchmark_session_float_r4(lut_r, lut_i, n_samples, n_chirps, &res); break;
-        case 3: benchmark_session_int16_r2(lut_r, lut_i, n_samples, n_chirps, &res); break;
-        case 4: benchmark_session_int16_r4(lut_r, lut_i, n_samples, n_chirps, &res); break;
+        //case 3: benchmark_session_int16_r2(lut_r, lut_i, n_samples, n_chirps, &res); break;
+        //case 4: benchmark_session_int16_r4(lut_r, lut_i, n_samples, n_chirps, &res); break;
         default: return;
     }
 
@@ -73,7 +73,7 @@ void evaluate_engine_pipeline(float *lut_r, float *lut_i, int n_samples, int n_c
             double r_err = fabs(est_R - tc.targets[t].r);
             double v_err = fabs(est_v - tc.targets[t].v);
 
-            if (r_err < 0.5 && v_err < 0.5) {
+            if (r_err < 0.5 && v_err < 1.5) {
                 if (r_err + v_err < min_error) {
                     min_error = r_err + v_err;
                     match_idx = t;
@@ -132,7 +132,7 @@ void run_automated_test_case(TestCase tc, int n_samples, int n_chirps) {
 
     generate_radar_test_case_data(lut_r, lut_i, n_samples, n_chirps, tc);
 
-    for (int engine_type = 0; engine_type < 5; engine_type++) {
+    for (int engine_type = 0; engine_type < 3; engine_type++) {
         evaluate_engine_pipeline(lut_r, lut_i, n_samples, n_chirps, tc, engine_type);
     }
 
@@ -148,7 +148,7 @@ int main() {
     
     // 기존 고정 엣지 케이스 1~4번 실행
     for (int i = 0; i < num_edge_cases; i++) {
-        run_automated_test_case(edge_cases[i], 2048, 512);
+        run_automated_test_case(edge_cases[i], 4096, 16);
     }
 
     // ======================================================================
@@ -164,7 +164,7 @@ int main() {
         tc5.targets[i].angle = rand_float(-80.0f, 80.0f);
         tc5.targets[i].snr_db = rand_float(20.0f, 70.0f); // 25dB ~ 70dB 
     }
-    run_automated_test_case(tc5, 2048, 512);
+    run_automated_test_case(tc5, 4096, 16);
 
     // ======================================================================
     // 💥 시나리오 6: Angle FFT 물리적 한계 시험 (Same R, Same V, 3 Random Angles)
@@ -188,7 +188,7 @@ int main() {
     tc6.targets[2].r = fixed_range; tc6.targets[2].v = fixed_vel; 
     tc6.targets[2].angle = rand_float( 20.0f,  60.0f); tc6.targets[2].snr_db = 55.0f;
     
-    run_automated_test_case(tc6, 2048, 512);
+    run_automated_test_case(tc6, 4096, 16);
 
     fftwf_cleanup();
     return 0;

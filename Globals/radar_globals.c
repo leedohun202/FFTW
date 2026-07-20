@@ -16,27 +16,31 @@ const double d_ant = (3e8 / 77e9) / 2.0;
 // =========================================================================
 // [2] Bit-Reversal 인덱스 테이블 (정수형/실수형 공용 사용)
 // =========================================================================
+int bitrev_4096[4096];
 int bitrev_2048[2048]; 
 int bitrev_1024[1024]; 
 int bitrev_512[512]; 
 int bitrev_256[256];   
 int bitrev_128[128];   
 int bitrev_64[64];
+int bitrev_16[16];
 
 
 // =========================================================================
 // [3] FLOAT 전용 Twiddle Factor 및 Window 테이블 (기존 유지)
 // =========================================================================
 // (나비 연산 절반 크기 N/2 최적화 적용)
+float twiddle_real_4096[2048]; float twiddle_imag_4096[2048];
 float twiddle_real_2048[1024]; float twiddle_imag_2048[1024];
 float twiddle_real_1024[512];  float twiddle_imag_1024[512];
 float twiddle_real_512[256];   float twiddle_imag_512[256];
 float twiddle_real_256[128];   float twiddle_imag_256[128];
 float twiddle_real_128[64];    float twiddle_imag_128[64];
 float twiddle_real_64[32];     float twiddle_imag_64[32];
+float twiddle_real_16[8];     float twiddle_imag_16[8];
 
-float win_2048[2048]; float win_1024[1024]; float win_512[512]; 
-float win_256[256];   float win_128[128];
+float win_4096[4096]; float win_2048[2048]; float win_1024[1024]; float win_512[512]; 
+float win_256[256];   float win_128[128]; float win_16[16];
 
 float doa_angle_lut_256[256];
 

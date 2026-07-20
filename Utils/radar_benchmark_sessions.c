@@ -28,11 +28,13 @@ typedef void (*fft_func_float)(float*, float*, int);
 typedef void (*fft_func_int16)(int16_t*, int16_t*, int, int); 
 
 static inline const float* get_float_window(int size) {
+    if (size == 4096) return win_4096;
     if (size == 2048) return win_2048;
     if (size == 1024) return win_1024;
     if (size == 512)  return win_512;
     if (size == 256)  return win_256;
     if (size == 128)  return win_128;
+    if (size == 16)  return win_16;
     return NULL; 
 }
 
@@ -46,21 +48,25 @@ static inline const int16_t* get_int16_window(int size) {
 }
 
 static void call_float_r2(float *r, float *i, int n) {
-    if (n == 2048)      custom_fft_2048_fixed(r, i);
+    if (n == 4096) custom_fft_4096_fixed(r, i);
+    else if (n == 2048) custom_fft_2048_fixed(r, i);
     else if (n == 1024) custom_fft_1024_fixed(r, i);
     else if (n == 512)  custom_fft_512_fixed(r, i);
     else if (n == 256)  custom_fft_256_fixed(r, i);
     else if (n == 128)  custom_fft_128_fixed(r, i);
     else if (n == 64)   custom_fft_64_fixed(r, i);
+    else if (n == 16)   custom_fft_16_fixed(r, i);
 }
 
 static void call_float_r4(float *r, float *i, int n) {
-    if (n == 2048)      custom_fft_2048_radix4(r, i);
+    if (n == 4096) custom_fft_4096_radix4(r, i);
+    else if (n == 2048) custom_fft_2048_radix4(r, i);
     else if (n == 1024) custom_fft_1024_radix4(r, i);
     else if (n == 512)  custom_fft_512_radix4(r, i);
     else if (n == 256)  custom_fft_256_radix4(r, i);
     else if (n == 128)  custom_fft_128_radix4(r, i);
-    else if (n == 64)   custom_fft_64_radix4(r, i);    
+    else if (n == 64)   custom_fft_64_radix4(r, i);  
+    else if (n == 16)   custom_fft_16_radix4(r, i);  
 }
 
 // 💥 [패치] 유연한 대처: 512, 256에만 skip_shift 전달
@@ -358,10 +364,13 @@ void benchmark_session_float_r2(const float *lut_r, const float *lut_i, int n_sa
     for (int i = 0; i < total_elements; i++) { cube_r[i] = lut_r[i]; cube_i[i] = lut_i[i]; }
     out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_float(cube_r, cube_i, n_samples, n_chirps, call_float_r2);
+    double start_transpose = get_current_time_ms();
     transpose_radar_cube(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_float_window(n_chirps));
-    out->time_doppler = run_doppler_loop_float(tmp_r, tmp_i, n_samples, n_chirps, call_float_r2);
+    double time_transpose = get_current_time_ms() - start_transpose;
+    free(cube_r); free(cube_i);
+    out->time_doppler = run_doppler_loop_float(tmp_r, tmp_i, n_samples, n_chirps, call_float_r2) + time_transpose;
     cfar_search_float_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
-    free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
+    free(tmp_r); free(tmp_i);
 }
 
 void benchmark_session_float_r4(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
@@ -375,10 +384,13 @@ void benchmark_session_float_r4(const float *lut_r, const float *lut_i, int n_sa
     for (int i = 0; i < total_elements; i++) { cube_r[i] = lut_r[i]; cube_i[i] = lut_i[i]; }
     out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_float(cube_r, cube_i, n_samples, n_chirps, call_float_r4);
+    double start_transpose = get_current_time_ms();
     transpose_radar_cube(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_float_window(n_chirps));
-    out->time_doppler = run_doppler_loop_float(tmp_r, tmp_i, n_samples, n_chirps, call_float_r4);
+    double time_transpose = get_current_time_ms() - start_transpose;
+    free(cube_r); free(cube_i); 
+    out->time_doppler = run_doppler_loop_float(tmp_r, tmp_i, n_samples, n_chirps, call_float_r4) + time_transpose;
     cfar_search_float_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
-    free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
+    free(tmp_r); free(tmp_i);
 }
 
 void benchmark_session_int16_r2(const float *lut_r, const float *lut_i, int n_samples, int n_chirps, BenchmarkResult *out) {
@@ -392,8 +404,10 @@ void benchmark_session_int16_r2(const float *lut_r, const float *lut_i, int n_sa
     for (int i = 0; i < total_elements; i++) { cube_r[i] = (int16_t)(lut_r[i] * 2048.0f); cube_i[i] = (int16_t)(lut_i[i] * 2048.0f); }
     out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_int16(cube_r, cube_i, n_samples, n_chirps, call_int16_r2);
-    transpose_radar_cube_int16(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_int16_window(n_chirps)); 
-    out->time_doppler = run_doppler_loop_int16(tmp_r, tmp_i, n_samples, n_chirps, call_int16_r2);
+    double start_transpose = get_current_time_ms();
+    transpose_radar_cube_int16(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_int16_window(n_chirps));
+    double time_transpose = get_current_time_ms() - start_transpose;
+    out->time_doppler = run_doppler_loop_int16(tmp_r, tmp_i, n_samples, n_chirps, call_int16_r2) + time_transpose;
     cfar_search_int16_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
     free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
 }
@@ -409,8 +423,10 @@ void benchmark_session_int16_r4(const float *lut_r, const float *lut_i, int n_sa
     for (int i = 0; i < total_elements; i++) { cube_r[i] = (int16_t)(lut_r[i] * 2048.0f); cube_i[i] = (int16_t)(lut_i[i] * 2048.0f); }
     out->actual_ram_mb = profiler_end_mem_mb(base_mem); profiler_flush_cache(); 
     out->time_range = run_range_loop_int16(cube_r, cube_i, n_samples, n_chirps, call_int16_r4);
-    transpose_radar_cube_int16(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_int16_window(n_chirps)); 
-    out->time_doppler = run_doppler_loop_int16(tmp_r, tmp_i, n_samples, n_chirps, call_int16_r4);
+    double start_transpose = get_current_time_ms();
+    transpose_radar_cube_int16(cube_r, cube_i, tmp_r, tmp_i, n_samples, n_chirps, get_int16_window(n_chirps));
+    double time_transpose = get_current_time_ms() - start_transpose;
+    out->time_doppler = run_doppler_loop_int16(tmp_r, tmp_i, n_samples, n_chirps, call_int16_r4) + time_transpose;
     cfar_search_int16_cube(tmp_r, tmp_i, n_samples, n_chirps, out);
     free(cube_r); free(cube_i); free(tmp_r); free(tmp_i);
 }
