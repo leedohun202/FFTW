@@ -7,7 +7,8 @@ radar_test
 
 mains/
 FFT_int16
-FFT_RADIX4
+
+Archive
 
 *.wisdom.backup
 *.wisdom.tmp
