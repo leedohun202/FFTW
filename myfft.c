@@ -2,7 +2,7 @@
  * myfft.c — FFTW 대체 커스텀 FFT (Custom Float Radix-2 결합 버전)
  * -----------------------------------------------------------------------------
  * - FFTW3의 인터페이스를 완벽하게 모방 (Shim API)
- * - 내부적으로 기존에 개발된 Custom Float Radix-2 (custom_fft_*_fixed) 호출
+ * - 내부적으로 기존에 개발된 Custom Float Radix-2 (custom_fft_*_fixed) or Float Radix-4 (custom_fft_*_radix4) 호출
  * - Gather/Scatter 방식을 통한 Interleaved <-> Split 메모리 레이아웃 변환
  * - 역변환(IFFT) 시 Conjugate(켤레) 트릭 사용
  * -----------------------------------------------------------------------------
@@ -60,6 +60,20 @@ static void dispatch_neon_fft_r2(float *r, float *i, int n) {
     else if (n == 16)   custom_fft_16_fixed(r, i);
     else fprintf(stderr, "[myfft] ERROR: Unsupported FFT size %d\n", n);
 }
+
+/* ===================== Custom Radix-4 커널 라우터 ====================== */
+static void dispatch_neon_fft_r4(float *r, float *i, int n) {
+    if (n == 4096)      custom_fft_4096_radix4(r, i);
+    else if (n == 2048) custom_fft_2048_radix4(r, i);
+    else if (n == 1024) custom_fft_1024_radix4(r, i);
+    else if (n == 512)  custom_fft_512_radix4(r, i);
+    else if (n == 256)  custom_fft_256_radix4(r, i);
+    else if (n == 128)  custom_fft_128_radix4(r, i);
+    else if (n == 64)   custom_fft_64_radix4(r, i);
+    else if (n == 16)   custom_fft_16_radix4(r, i);
+    else fprintf(stderr, "[myfft] ERROR: Unsupported FFT size %d\n", n);
+}
+
 
 /* ===================== 플랜 공통 할당 ================================== */
 static myfft_plan alloc_plan(myfft_kind kind, int n, int sign,
@@ -129,8 +143,9 @@ static void run_c2c_batched(const myfft_plan p, const void* in_v, fftwf_complex*
             }
         }
 
-        /* 2. Custom Float Radix-2 커널 실행 */
+        /* 2. Custom Float Radix-2 or Radix-4 커널 실행 */
         dispatch_neon_fft_r2(p->scratch_r, p->scratch_i, n);
+        //dispatch_neon_fft_r4(p->scratch_r, p->scratch_i, n);
 
         /* 3. Scatter & IFFT Conjugate (임시 버퍼에서 출력으로 복사) */
         for (int k = 0; k < n; ++k) {
@@ -156,8 +171,9 @@ static void run_r2c_batched(const myfft_plan p, const float* in, fftwf_complex* 
             p->scratch_i[k] = 0.0f;
         }
 
-        /* 2. Custom Float Radix-2 커널 실행 */
+        /* 2. Custom Float Radix-2 or Radix-4 커널 실행 */
         dispatch_neon_fft_r2(p->scratch_r, p->scratch_i, n);
+        //dispatch_neon_fft_r4(p->scratch_r, p->scratch_i, n);
 
         /* 3. Scatter (N/2+1 개만 추출하여 출력) */
         for (int k = 0; k < nout; ++k) {

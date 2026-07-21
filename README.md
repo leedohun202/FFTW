@@ -1,3 +1,13 @@
+## 코드 특징
+
+FFT/ : real과 imaginary 2개의 float array를 input으로 받는 radix-2 FFT 코드.
+FFT_RADIX4/ : real과 imaginary 2개의 float array를 input으로 받는 radix-4 FFT 코드.
+Globals/ : FFT에 사용될 global parameter를 정의하고 초기화. 각 샘플 크기에 따른 FFT 코드에 사용될 bit reversal과 삼각함수 LUT를 맨 처음에 한꺼번에 만든다.
+
+float[2]인 input fftwf_complex를 바로 사용하지는 못하고, FFT/와 FFT_RADIX4/의 코드 특성상 fftwf_complex를 real과 imag로 변환하고 custom fft에 넣고 돌렸다가 다시 합치게 된다.
+
+속도는 fftw에 비해 느려졌지만 일단 기존 코드와 호환이 되며, 정확도는 그대로이다.
+
 # FFT 데모 — FFTW 대체 커스텀 FFT (빌드·실행 가능)
 
 레이더 알고리즘은 전부 걷어내고, 파이프라인이 실제로 쓰는 **FFT 사용 패턴만** 뽑아낸

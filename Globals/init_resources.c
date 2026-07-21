@@ -12,7 +12,9 @@
  * - 1. Bit-Reversal 주소 테이블 (메모리 스와핑용)
  * - 2. Float Twiddle Factor (N/2 크기) & Hanning Window
  * - 3. Int16 Twiddle Factor (분기 제거를 위해 전체 N 크기, Q15 포맷) & Int16 Window
+ * 
  */
+ 
 void init_resources() {
 
     // =========================================================================
@@ -100,37 +102,31 @@ void init_resources() {
         twiddle_real_4096[i] = (float)cos(-2.0 * PI * i / 4096); 
         twiddle_imag_4096[i] = (float)sin(-2.0 * PI * i / 4096); 
     }
-    for (int i = 0; i < 4096; i++) win_4096[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (4096 - 1)));
     
     for (int i = 0; i < 1024; i++) { // 2048 (Twiddle: 1024, Win: 2048)
         twiddle_real_2048[i] = (float)cos(-2.0 * PI * i / 2048); 
         twiddle_imag_2048[i] = (float)sin(-2.0 * PI * i / 2048); 
     }
-    for (int i = 0; i < 2048; i++) win_2048[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (2048 - 1)));
     
     for (int i = 0; i < 512; i++) { // 1024 (Twiddle: 512, Win: 1024)
         twiddle_real_1024[i] = (float)cos(-2.0 * PI * i / 1024); 
         twiddle_imag_1024[i] = (float)sin(-2.0 * PI * i / 1024); 
     }
-    for (int i = 0; i < 1024; i++) win_1024[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (1024 - 1)));
 
     for (int i = 0; i < 256; i++) { // 512 (Twiddle: 256, Win: 512)
         twiddle_real_512[i]  = (float)cos(-2.0 * PI * i / 512);  
         twiddle_imag_512[i]  = (float)sin(-2.0 * PI * i / 512); 
     }
-    for (int i = 0; i < 512; i++) win_512[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (512 - 1)));
 
     for (int i = 0; i < 128; i++) { // 256 (Twiddle: 128, Win: 256)
         twiddle_real_256[i]  = (float)cos(-2.0 * PI * i / 256);  
         twiddle_imag_256[i]  = (float)sin(-2.0 * PI * i / 256); 
     }
-    for (int i = 0; i < 256; i++) win_256[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (256 - 1)));
 
     for (int i = 0; i < 64; i++) { // 128 (Twiddle: 64, Win: 128)
         twiddle_real_128[i]  = (float)cos(-2.0 * PI * i / 128);  
         twiddle_imag_128[i]  = (float)sin(-2.0 * PI * i / 128); 
     }
-    for (int i = 0; i < 128; i++) win_128[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (128 - 1)));
 
     for (int i = 0; i < 32; i++) { // 64 (Twiddle: 32)
         twiddle_real_64[i]   = (float)cos(-2.0 * PI * i / 64);   
@@ -142,10 +138,14 @@ void init_resources() {
         twiddle_imag_16[i]   = (float)sin(-2.0 * PI * i / 16); 
     }
 
+    // window 생성(기존 코드에 window 함수 존재하면 삭제해도 무방. 현재 demo에서는 사용하지 않음.)
+    /*
+    for (int i = 0; i < 4096; i++) win_4096[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (4096 - 1)));
+    for (int i = 0; i < 2048; i++) win_2048[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (2048 - 1)));
+    for (int i = 0; i < 1024; i++) win_1024[i] = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (1024 - 1)));
+    for (int i = 0; i < 512; i++) win_512[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (512 - 1)));
+    for (int i = 0; i < 256; i++) win_256[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (256 - 1)));
+    for (int i = 0; i < 128; i++) win_128[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (128 - 1)));
     for (int i = 0; i < 16; i++) win_16[i]  = 0.5f * (1.0f - (float)cos(2.0 * PI * i / (16 - 1)));
-
-
-
-    
-    
+    */
 }

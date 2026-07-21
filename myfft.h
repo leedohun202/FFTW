@@ -13,9 +13,9 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h> 
-#include <sys/time.h>
-#include <sys/resource.h> 
-#include <omp.h>
+#include <sys/time.h> // processing time 측정을 위한 헤더
+#include <sys/resource.h> // 메모리 사용량 측정을 위한 헤더
+#include <omp.h> // OpenMP 병렬처리를 위한 헤더(삭제해도 무방)
 #include <malloc.h>
 #include <unistd.h>
 #include <stddef.h>   /* size_t */
@@ -32,12 +32,14 @@ extern "C" {
  * [PART 1] 레이더 파이프라인 전역 설정 (from radar_config.h)
  * ========================================================================= */
 
-// 레이더 파이프라인 상수
+/* 레이더 파이프라인 상수 (demo에선 사용되지 않음)
 #define PI 3.14159265358979323846  
 #define N_ANTENNAS  8  
 #define TILE_SIZE   16    
+*/
 
-// 전역 물리 상수
+
+/* 전역 물리 상수
 extern const double c; 
 extern const double fc; 
 extern const double B; 
@@ -46,13 +48,14 @@ extern const double Fs;
 extern const double S; 
 extern const double lambda_c; 
 extern const double d_ant;
+*/
 
 // 전역 룩업 테이블(LUT) 및 윈도우 배열 선언
 extern int bitrev_4096[4096]; extern int bitrev_2048[2048]; extern int bitrev_1024[1024]; 
 extern int bitrev_512[512];   extern int bitrev_256[256];   extern int bitrev_128[128];   
 extern int bitrev_64[64];     extern int bitrev_16[16];
 
-// FLOAT 전용 Twiddle Factor 및 Window 테이블 (나비 연산 절반 크기 N/2)
+// FLOAT 전용 Twiddle Factor 및 Window 테이블 (Butterfly 연산 절반 크기 N/2)
 extern float twiddle_real_4096[2048]; extern float twiddle_imag_4096[2048];
 extern float twiddle_real_2048[1024]; extern float twiddle_imag_2048[1024];
 extern float twiddle_real_1024[512];  extern float twiddle_imag_1024[512];
@@ -62,6 +65,7 @@ extern float twiddle_real_128[64];    extern float twiddle_imag_128[64];
 extern float twiddle_real_64[32];     extern float twiddle_imag_64[32];
 extern float twiddle_real_16[8];      extern float twiddle_imag_16[8];
 
+/* (window 함수가 기존 코드에 존재할 경우 삭제해도 무방)
 extern float win_4096[4096];
 extern float win_2048[2048];
 extern float win_1024[1024];
@@ -70,6 +74,7 @@ extern float win_256[256];
 extern float win_128[128];
 extern float win_64[64];
 extern float win_16[16];
+*/
 
 // 리소스 초기화 함수
 void init_resources();
