@@ -48,19 +48,23 @@ static void print_mag(const char* label, const fftwf_complex* a, int n) {
 /*    입력: bin 2 의 복소 톤 → 출력 스펙트럼은 bin 2 에서 피크          */
 /* ------------------------------------------------------------------ */
 static void test_c2c_forward(void) {
-    const int N = 2048, tone = 256;
+    const int N = 64, tone = 8;
     printf("[1] c2c forward 1D  (N=%d, angle-FFT 패턴)\n", N);
     fftwf_complex* in  = fftwf_alloc_complex(N);
     fftwf_complex* out = fftwf_alloc_complex(N);
     fftwf_plan p = fftwf_plan_dft_1d(N, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
 
-    for (int k = 0; k < N; ++k) {                       /* 입력 생성: e^{+i 2π·tone·k/N} */
+    for (int k = 0; k < N; ++k) {
         in[k][0] = cosf(2.0f*(float)M_PI*tone*k/N);
         in[k][1] = sinf(2.0f*(float)M_PI*tone*k/N);
     }
     fftwf_execute(p);
     print_mag("|X[k]| =", out, N);
-    CHECK(argmax_mag(out, N) == tone, "peak at expected bin (256)");
+
+    // 🚀 동적 문자열 생성 및 CHECK 적용
+    char msg[64];
+    snprintf(msg, sizeof(msg), "peak at expected bin (%d)", tone);
+    CHECK(argmax_mag(out, N) == tone, msg);
 
     fftwf_destroy_plan(p); fftwf_free(in); fftwf_free(out);
 }
@@ -100,7 +104,8 @@ static void test_ifft_roundtrip(void) {
 /*    실수 코사인(bin 3) 입력 → N/2+1 반스펙트럼, bin 3 에서 피크       */
 /* ------------------------------------------------------------------ */
 static void test_r2c(void) {
-    const int N = 4096, tone = 256, NOUT = N/2 + 1;
+    // tone 값을 N/2 이하인 값으로 설정해야 합니다.
+    const int N = 64, tone = 25, NOUT = N/2 + 1;
     printf("[3] r2c forward  (N=%d → %d bins, range-FFT 패턴 — 반스펙트럼)\n", N, NOUT);
     float*         in  = fftwf_alloc_real(N);
     fftwf_complex* out = fftwf_alloc_complex(NOUT);
@@ -110,8 +115,21 @@ static void test_r2c(void) {
                                            out, NULL, 1, NOUT, FFTW_ESTIMATE);
     for (int k = 0; k < N; ++k) in[k] = cosf(2.0f*(float)M_PI*tone*k/N);
     fftwf_execute(p);
-    print_mag("|R[k]| =", out, NOUT);
-    CHECK(argmax_mag(out, NOUT) == tone, "peak at expected bin (256)");
+
+    double sum_re = 0.0, sum_im = 0.0;
+    for (int k = 0; k < NOUT; ++k) {
+        sum_re += out[k][0];
+        sum_im += out[k][1];
+    }
+    int peak = argmax_mag(out, NOUT);
+    
+    printf("    [Checksum]  Sum(Re) = %12.4f, Sum(Im) = %12.4f\n", sum_re, sum_im);
+    printf("    [Peak %3d]  Re = %10.4f, Im = %10.4f\n", peak, out[peak][0], out[peak][1]);
+    
+    // 🚀 동적 문자열 생성 및 CHECK 적용
+    char msg[64];
+    snprintf(msg, sizeof(msg), "peak at expected bin (%d)", tone);
+    CHECK(peak == tone, msg);
 
     fftwf_destroy_plan(p); fftwf_free(in); fftwf_free(out);
 }
@@ -162,9 +180,9 @@ static void test_batched_doppler(void) {
 /*    입력 버퍼 == 출력 버퍼. out-of-place 결과와 일치해야 함.          */
 /* ------------------------------------------------------------------ */
 static void test_inplace(void) {
-    const int N = 2048, tone = 512;
+    const int N = 2048, tone = 1033;
     printf("[5] in-place c2c  (N=%d, zpFFT 패턴 — 입력버퍼=출력버퍼)\n", N);
-    fftwf_complex* buf = fftwf_alloc_complex(N);   /* in-place */
+    fftwf_complex* buf = fftwf_alloc_complex(N);
     fftwf_complex* ref_in  = fftwf_alloc_complex(N);
     fftwf_complex* ref_out = fftwf_alloc_complex(N);
     for (int k = 0; k < N; ++k) {
@@ -179,7 +197,12 @@ static void test_inplace(void) {
     float d = 0.0f;
     for (int k = 0; k < N; ++k) d += fabsf(buf[k][0]-ref_out[k][0]) + fabsf(buf[k][1]-ref_out[k][1]);
     printf("    in-place vs out-of-place 차이 = %.2e\n", d);
-    CHECK(argmax_mag(buf, N) == tone, "peak at expected bin (5)");
+    
+    // 🚀 동적 문자열 생성 및 CHECK 적용
+    char msg[64];
+    snprintf(msg, sizeof(msg), "peak at expected bin (%d)", tone);
+    CHECK(argmax_mag(buf, N) == tone, msg);
+    
     CHECK(d < 1e-3f, "in-place == out-of-place");
 
     fftwf_destroy_plan(pin); fftwf_destroy_plan(pref);

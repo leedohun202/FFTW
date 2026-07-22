@@ -36,6 +36,9 @@ struct myfft_plan_s {
 
     /* R2C 변환 시 N 크기의 복원 연산을 위해 필요한 Interleaved 단일 버퍼 (C2C는 NULL) */
     fftwf_complex* scratch_cpx;
+
+    /* 🚀 스택 오버플로우 방지용 힙(Heap) 할당 임시 버퍼 */
+    fftwf_complex* tmp_cpx;
 };
 
 /* ============================== 메모리 ================================== */
@@ -76,23 +79,39 @@ static myfft_plan alloc_plan(myfft_kind kind, int n, int sign,
                              int howmany, int istride, int idist,
                              int ostride, int odist,
                              void* in_bound, fftwf_complex* out_bound) {
-    if (!myfft_is_pow2((size_t)n)) {
-        fprintf(stderr, "[myfft] WARNING: N=%d is not a power of two (unsupported).\n", n);
+    // 🚀 [High 3 방어] 지원 상한선(4096) 초과 및 2의 승수 검사 (Hard Fail)
+    if (n > 4096 || !myfft_is_pow2((size_t)n)) {
+        fprintf(stderr, "[myfft] ERROR: N=%d is unsupported (must be pow2 and <= 4096).\n", n);
+        return NULL;
     }
+
+    // 🚀 [Medium 4 방어] C2C 플랜에서 ostride != 1 인 경우 지원 거부
+    if (kind == KIND_C2C && ostride != 1) {
+        fprintf(stderr, "[myfft] ERROR: C2C plan currently strictly requires ostride == 1.\n");
+        return NULL;
+    }
+
     myfft_plan p = (myfft_plan)calloc(1, sizeof(struct myfft_plan_s));
-    if (!p) return NULL;
+    if (!p) return NULL; // 🚀 [Medium 5 방어] 메모리 할당 실패 역참조 방지
     
     p->kind = kind; p->n = n; p->sign = sign; p->howmany = howmany;
     p->istride = istride; p->idist = idist;
     p->ostride = ostride; p->odist = odist;
     p->in_bound = in_bound; p->out_bound = out_bound;
 
-    /* R2C의 경우 N 크기의 연산을 위해 전체 공간이 필요하므로 버퍼 할당 
-       C2C는 In-place 연산을 통해 메모리 할당 및 복사 오버헤드 제거 */
+    /* R2C의 경우 N 크기의 연산을 위해 전체 공간이 필요하므로 버퍼 할당 */
     if (kind == KIND_R2C) {
-        posix_memalign((void**)&p->scratch_cpx, 64, n * sizeof(fftwf_complex));
+        if (posix_memalign((void**)&p->scratch_cpx, 64, n * sizeof(fftwf_complex)) != 0) {
+            free(p); return NULL;
+        }
     } else {
         p->scratch_cpx = NULL; 
+    }
+
+    /* 🚀 [High 3 방어] 루프 내 스택 오버플로우를 막기 위한 힙 버퍼 할당 */
+    if (posix_memalign((void**)&p->tmp_cpx, 64, n * sizeof(fftwf_complex)) != 0) {
+        if (p->scratch_cpx) free(p->scratch_cpx);
+        free(p); return NULL;
     }
 
     return p;
@@ -123,12 +142,14 @@ fftwf_plan fftwf_plan_many_dft_r2c(int rank, const int* n, int howmany,
 void fftwf_destroy_plan(fftwf_plan p) {
     if (!p) return;
     if (p->scratch_cpx) free(p->scratch_cpx);
+    if (p->tmp_cpx)     free(p->tmp_cpx); // 🚀 할당 해제 추가
     free(p);
 }
 
 // =========================================================================
 // ⚡ N=16 Direct NEON Ultra-Fast Path (Sub-0.4us + 100% PASS)
 // =========================================================================
+#if defined(__aarch64__) || defined(__ARM_NEON)
 static inline void custom_fft_16_radix4_direct_fast(const fftwf_complex *in, fftwf_complex *out, int istride) {
     // 1. Radix-4 Digit-Reversal Unrolled Load: (0,4,8,12 / 1,5,9,13 / 2,6,10,14 / 3,7,11,15)
     out[0][0]  = in[0  * istride][0]; out[0][1]  = in[0  * istride][1];
@@ -226,6 +247,7 @@ static inline void custom_fft_16_radix4_direct_fast(const fftwf_complex *in, fft
     float32x4x2_t out3; out3.val[0] = vsubq_f32(v_t_r1, v_t_i3); out3.val[1] = vaddq_f32(v_t_i1, v_t_r3);
     vst2q_f32((float*)&out[12], out3);
 }
+#endif
 
 // =========================================================================
 // [1] C2C 배치 실행 커널 (Fused Bit-reversal 반영)
@@ -239,31 +261,31 @@ static void run_c2c_batched(const myfft_plan p, const void* in_v, fftwf_complex*
         const fftwf_complex* in_base = &in[b * p->idist];
 
         // 1. N=16 Doppler Pattern Ultra-Fast Direct Path
+#if defined(__aarch64__) || defined(__ARM_NEON)
         if (n == 16 && p->sign == FFTW_FORWARD && p->ostride == 1 && p->istride > 1) {
             custom_fft_16_radix4_direct_fast(in_base, out_base, p->istride);
             continue;
         }
+#endif
 
         // 2. MIXED 크기(2048, 512, 128, 32) Fused execution
         if (n == 2048 || n == 512 || n == 128 || n == 32) {
             if (p->sign == FFTW_BACKWARD) {
                 // 🛠️ IFFT 패턴: Pre-conjugate (입력 허수부 반전) 후 Fused FFT 실행
-                fftwf_complex tmp[2048];
                 for (int k = 0; k < n; ++k) {
-                    tmp[k][0] = in_base[k * p->istride][0];
-                    tmp[k][1] = -in_base[k * p->istride][1];
+                    p->tmp_cpx[k][0] = in_base[k * p->istride][0];
+                    p->tmp_cpx[k][1] = -in_base[k * p->istride][1];
                 }
-                dispatch_neon_fft_r4_fused(tmp, out_base, n);
+                dispatch_neon_fft_r4_fused(p->tmp_cpx, out_base, n);
             } else if (in_base != out_base) {
                 // Out-of-place (Test 1 등): zero-copy 최고속 실행!
                 dispatch_neon_fft_r4_fused(in_base, out_base, n);
             } else {
                 // In-place (Test 5 등): 데이터 오염 방지용 임시 버퍼 사용
-                fftwf_complex tmp[2048];
-                memcpy(tmp, in_base, n * sizeof(fftwf_complex));
-                dispatch_neon_fft_r4_fused(tmp, out_base, n);
+                memcpy(p->tmp_cpx, in_base, n * sizeof(fftwf_complex));
+                dispatch_neon_fft_r4_fused(p->tmp_cpx, out_base, n);
             }
-        } 
+        }
         // 3. PURE 크기(4096, 1024, 256, 64, 16)
         else {
             if (p->istride == 1 && p->ostride == 1 && p->sign == FFTW_FORWARD) {
@@ -278,10 +300,11 @@ static void run_c2c_batched(const myfft_plan p, const void* in_v, fftwf_complex*
             dispatch_neon_fft_r4_pure(out_base, n);
         }
 
-        // 4. IFFT 사후 Conjugate 처리 (Post-conjugate)
+        // 🛠️ IFFT Post-conjugate 처리
         if (p->sign == FFTW_BACKWARD) {
             for (int k = 0; k < n; ++k) {
-                out_base[k * p->ostride][1] = -out_base[k * p->ostride][1];
+                // 🚀 [Medium 4 반영] 커널의 연속 기록 계약(ostride=1)과 완벽하게 일치시킴
+                out_base[k][1] = -out_base[k][1];
             }
         }
     }
@@ -303,6 +326,36 @@ static const fftwf_complex* get_twiddle_ptr(int n) {
     }
 }
 
+/* R2C Unpack (공액 대칭 분리) 공통 헬퍼 함수 */
+static inline void unpack_r2c_half_spectrum(fftwf_complex* z, fftwf_complex* out_base, const fftwf_complex* tw, int n2) {
+    float z0r = z[0][0], z0i = z[0][1];
+    out_base[0][0]  = z0r + z0i; out_base[0][1]  = 0.0f;
+    out_base[n2][0] = z0r - z0i; out_base[n2][1] = 0.0f;
+    
+    for (int k = 1; k <= n2 / 2; ++k) {
+        int m = n2 - k;
+        float zkr = z[k][0], zki = z[k][1];
+        float zmr = z[m][0], zmi = z[m][1];
+        
+        float akr = 0.5f * (zkr + zmr);
+        float aki = 0.5f * (zki - zmi);
+        float bkr = 0.5f * (zkr - zmr);
+        float bki = 0.5f * (zki + zmi);
+        
+        float twr = tw[k][0];
+        float twi = tw[k][1];
+        
+        float ckr = -(twr * bki + twi * bkr);
+        float cki =  (twr * bkr - twi * bki);
+        
+        out_base[k][0] = akr - ckr;
+        out_base[k][1] = aki - cki;
+        
+        out_base[m][0] = akr + ckr;
+        out_base[m][1] = -(aki + cki);
+    }
+}
+
 // =========================================================================
 // [2] R2C 배치 실행 커널 (Half-Size + Fused Zero-Pack 최적화)
 // =========================================================================
@@ -321,7 +374,6 @@ static void run_r2c_batched(const myfft_plan p, const float* in, fftwf_complex* 
         /* ------------------------------------------------------------------ */
         if (n2 == 2048 || n2 == 512 || n2 == 128 || n2 == 32) {
             // MIXED 크기 (예: N=4096 -> n2=2048):
-            // istride==1이면 Pack(memcpy) 없이 in_base를 복소수로 직접 지정하여 Zero-Pack Fused 연산!
             if (p->istride == 1) {
                 dispatch_neon_fft_r4_fused((const fftwf_complex*)in_base, p->scratch_cpx, n2);
             } else {
@@ -329,9 +381,9 @@ static void run_r2c_batched(const myfft_plan p, const float* in, fftwf_complex* 
                     p->scratch_cpx[k][0] = in_base[(2 * k) * p->istride];
                     p->scratch_cpx[k][1] = in_base[(2 * k + 1) * p->istride];
                 }
-                fftwf_complex tmp[2048];
-                memcpy(tmp, p->scratch_cpx, n2 * sizeof(fftwf_complex));
-                dispatch_neon_fft_r4_fused(tmp, p->scratch_cpx, n2);
+                // 🚀 스택 오버플로우 유발 배열 제거 및 p->tmp_cpx 활용
+                memcpy(p->tmp_cpx, p->scratch_cpx, n2 * sizeof(fftwf_complex));
+                dispatch_neon_fft_r4_fused(p->tmp_cpx, p->scratch_cpx, n2);
             }
         } else {
             // PURE 크기 (예: N=2048 -> n2=1024):
@@ -346,40 +398,8 @@ static void run_r2c_batched(const myfft_plan p, const float* in, fftwf_complex* 
             }
             dispatch_neon_fft_r4_pure(p->scratch_cpx, n2);
         }
-
-        /* 3. Unpack (Post-processing): N/2 스펙트럼을 N 스펙트럼으로 분리 */
-        fftwf_complex* z = p->scratch_cpx;
         
-        float z0r = z[0][0];
-        float z0i = z[0][1];
-        out_base[0][0]  = z0r + z0i; out_base[0][1]  = 0.0f;
-        out_base[n2][0] = z0r - z0i; out_base[n2][1] = 0.0f;
-        
-        for (int k = 1; k <= n2 / 2; ++k) {
-            int m = n2 - k;
-            
-            float zkr = z[k][0], zki = z[k][1];
-            float zmr = z[m][0], zmi = z[m][1];
-            
-            // 공액 대칭 연산 (Conjugate Symmetry)
-            float akr = 0.5f * (zkr + zmr);
-            float aki = 0.5f * (zki - zmi);
-            float bkr = 0.5f * (zkr - zmr);
-            float bki = 0.5f * (zki + zmi);
-            
-            float twr = tw[k][0];
-            float twi = tw[k][1];
-            
-            // 복소 나비 연산
-            float ckr = -(twr * bki + twi * bkr);
-            float cki =  (twr * bkr - twi * bki);
-            
-            out_base[k][0] = akr - ckr;
-            out_base[k][1] = aki - cki;
-            
-            out_base[m][0] = akr + ckr;
-            out_base[m][1] = -(aki + cki);
-        }
+        unpack_r2c_half_spectrum(p->scratch_cpx, out_base, tw, n2);
 
         /* ostride != 1 일 때만 최종 위치로 Scatter */
         if (p->ostride != 1) {
