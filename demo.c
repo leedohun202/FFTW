@@ -48,7 +48,7 @@ static void print_mag(const char* label, const fftwf_complex* a, int n) {
 /*    입력: bin 2 의 복소 톤 → 출력 스펙트럼은 bin 2 에서 피크          */
 /* ------------------------------------------------------------------ */
 static void test_c2c_forward(void) {
-    const int N = 4096, tone = 2;
+    const int N = 2048, tone = 256;
     printf("[1] c2c forward 1D  (N=%d, angle-FFT 패턴)\n", N);
     fftwf_complex* in  = fftwf_alloc_complex(N);
     fftwf_complex* out = fftwf_alloc_complex(N);
@@ -60,7 +60,7 @@ static void test_c2c_forward(void) {
     }
     fftwf_execute(p);
     print_mag("|X[k]| =", out, N);
-    CHECK(argmax_mag(out, N) == tone, "peak at expected bin (2)");
+    CHECK(argmax_mag(out, N) == tone, "peak at expected bin (256)");
 
     fftwf_destroy_plan(p); fftwf_free(in); fftwf_free(out);
 }
@@ -70,7 +70,7 @@ static void test_c2c_forward(void) {
 /*    forward 결과를 역변환하고 N 으로 나눠 원신호 복원                 */
 /* ------------------------------------------------------------------ */
 static void test_ifft_roundtrip(void) {
-    const int N = 4096;
+    const int N = 2048;
     printf("[2] c2c backward + 수동 /N  (N=%d, iFFT 패턴 — 비정규화 규약)\n", N);
     fftwf_complex* x  = fftwf_alloc_complex(N);
     fftwf_complex* X  = fftwf_alloc_complex(N);
@@ -100,7 +100,7 @@ static void test_ifft_roundtrip(void) {
 /*    실수 코사인(bin 3) 입력 → N/2+1 반스펙트럼, bin 3 에서 피크       */
 /* ------------------------------------------------------------------ */
 static void test_r2c(void) {
-    const int N = 4096, tone = 3, NOUT = N/2 + 1;
+    const int N = 4096, tone = 256, NOUT = N/2 + 1;
     printf("[3] r2c forward  (N=%d → %d bins, range-FFT 패턴 — 반스펙트럼)\n", N, NOUT);
     float*         in  = fftwf_alloc_real(N);
     fftwf_complex* out = fftwf_alloc_complex(NOUT);
@@ -111,7 +111,7 @@ static void test_r2c(void) {
     for (int k = 0; k < N; ++k) in[k] = cosf(2.0f*(float)M_PI*tone*k/N);
     fftwf_execute(p);
     print_mag("|R[k]| =", out, NOUT);
-    CHECK(argmax_mag(out, NOUT) == tone, "peak at expected bin (3)");
+    CHECK(argmax_mag(out, NOUT) == tone, "peak at expected bin (256)");
 
     fftwf_destroy_plan(p); fftwf_free(in); fftwf_free(out);
 }
@@ -122,7 +122,7 @@ static void test_r2c(void) {
 /*    → 열 방향으로 읽어 batch b 는 bin b 의 톤. 출력은 배치별 연속.     */
 /* ------------------------------------------------------------------ */
 static void test_batched_doppler(void) {
-    const int N = 4096, HOW = 4;
+    const int N = 16, HOW = 4;
     printf("[4] 배치 strided c2c + execute_dft  (N=%d, howmany=%d, doppler 패턴)\n", N, HOW);
     fftwf_complex* in   = fftwf_alloc_complex(N * HOW);
     fftwf_complex* outA = fftwf_alloc_complex(N * HOW);
@@ -162,7 +162,7 @@ static void test_batched_doppler(void) {
 /*    입력 버퍼 == 출력 버퍼. out-of-place 결과와 일치해야 함.          */
 /* ------------------------------------------------------------------ */
 static void test_inplace(void) {
-    const int N = 4096, tone = 5;
+    const int N = 2048, tone = 512;
     printf("[5] in-place c2c  (N=%d, zpFFT 패턴 — 입력버퍼=출력버퍼)\n", N);
     fftwf_complex* buf = fftwf_alloc_complex(N);   /* in-place */
     fftwf_complex* ref_in  = fftwf_alloc_complex(N);

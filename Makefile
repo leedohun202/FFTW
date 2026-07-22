@@ -1,52 +1,72 @@
-# FFT demo — 두 백엔드로 빌드 가능
-#   make            커스텀 myfft (외부 의존성 없음) → ./fft_demo
-#   make run        커스텀 빌드 후 실행
-#   make fftw       실제 libfftw3f 링크        → ./fft_demo_fftw   (FFTW 설치 필요)
-#   make run-fftw   FFTW 빌드 후 실행
-#   make compare    두 백엔드 실행 결과를 diff (정확성 대조)
-#   make clean
+# FFT demo 벤치마크 Makefile
+# -------------------------------------------------------------------
+#  make r2         : Radix-2 커스텀 백엔드 빌드 (custom_fft_all_radix2.c 사용)
+#  make r4         : Radix-4 커스텀 백엔드 빌드 (custom_fft_all_radix4.c 사용)
+#  make fftw       : 실제 libfftw3f 링크 빌드 (골든 레퍼런스)
+#
+#  make run-r2     : Radix-2 백엔드 빌드 후 실행
+#  make run-r4     : Radix-4 백엔드 빌드 후 실행
+#  make run-fftw   : FFTW 백엔드 빌드 후 실행
+#
+#  make compare    : Radix-2와 FFTW 실행 결과를 diff (정확성 대조)
+#  make clean      : 빌드 산출물 삭제
+# -------------------------------------------------------------------
 
 CC      ?= gcc
 CFLAGS  ?= -std=gnu11 -O2 -Wall -I.
 LDLIBS_COMMON = -lm
 
-TARGET_CUSTOM = fft_demo
-TARGET_FFTW   = fft_demo_fftw
+TARGET_R2   = fft_demo_r2
+TARGET_R4   = fft_demo_r4
+TARGET_FFTW = fft_demo_fftw
 
-RADAR_SRCS = $(wildcard Globals/*.c) $(wildcard FFT/*.c) $(wildcard FFT_RADIX4/*.c)
+RADAR_SRCS = $(wildcard Globals/*.c)
 
-.PHONY: all run fftw run-fftw compare clean
+.PHONY: all r2 r4 fftw run-r2 run-r4 run-fftw compare clean
 
-all: $(TARGET_CUSTOM)
+all: r2 r4
 
-# --- 커스텀 백엔드 (기본, 무의존) ---
-$(TARGET_CUSTOM): demo.c myfft.c myfft.h fft_backend.h $(RADAR_SRCS)
-	$(CC) $(CFLAGS) demo.c myfft.c $(RADAR_SRCS) -o $(TARGET_CUSTOM) $(LDLIBS_COMMON)
+# --- [1] Radix-2 커스텀 백엔드 ---
+r2: $(TARGET_R2)
+$(TARGET_R2): demo.c myfft_radix2.c custom_fft_all_radix2.c myfft.h fft_backend.h $(RADAR_SRCS)
+	$(CC) $(CFLAGS) demo.c myfft_radix2.c custom_fft_all_radix2.c $(RADAR_SRCS) -o $(TARGET_R2) $(LDLIBS_COMMON)
 
-run: $(TARGET_CUSTOM)
-	./$(TARGET_CUSTOM)
+run-r2: $(TARGET_R2)
+	./$(TARGET_R2)
 
-# --- 실 FFTW 백엔드 (골든 레퍼런스) ---
-# demo 가 fftwf_init_threads 등을 호출하므로 -lfftw3f_threads -pthread 필요
-# (레이더 Makefile 의 링크 구성과 동일). 순서 주의: threads 를 먼저.
+# --- [2] Radix-4 커스텀 백엔드 ---
+r4: $(TARGET_R4)
+$(TARGET_R4): demo.c myfft_radix4.c custom_fft_all_radix4.c myfft.h fft_backend.h $(RADAR_SRCS)
+	$(CC) $(CFLAGS) demo.c myfft_radix4.c custom_fft_all_radix4.c $(RADAR_SRCS) -o $(TARGET_R4) $(LDLIBS_COMMON)
+
+run-r4: $(TARGET_R4)
+	./$(TARGET_R4)
+
+# --- [3] 실 FFTW 백엔드 (골든 레퍼런스) ---
+# demo가 fftwf_init_threads 등을 호출하므로 -lfftw3f_threads -pthread 필요
 LDLIBS_FFTW = -lfftw3f_threads -lfftw3f -pthread $(LDLIBS_COMMON)
+fftw: $(TARGET_FFTW)
 $(TARGET_FFTW): demo.c fft_backend.h
 	$(CC) $(CFLAGS) -DUSE_FFTW demo.c -o $(TARGET_FFTW) $(LDLIBS_FFTW)
-
-fftw: $(TARGET_FFTW)
 
 run-fftw: $(TARGET_FFTW)
 	./$(TARGET_FFTW)
 
-# --- 두 백엔드 출력 대조 ---
-compare: $(TARGET_CUSTOM) $(TARGET_FFTW)
-	@./$(TARGET_CUSTOM) > out_custom.txt; \
-	 ./$(TARGET_FFTW)   > out_fftw.txt; \
-	 sed '1d' out_custom.txt > c.txt; sed '1d' out_fftw.txt > f.txt; \
-	 if diff -q c.txt f.txt >/dev/null; then echo "OK: 커스텀 == FFTW (헤더 줄 제외 동일)"; \
-	 else echo "DIFF 발견:"; diff c.txt f.txt; fi; \
-	 rm -f c.txt f.txt
+# --- [4] Radix-2 vs FFTW 출력 대조 ---
+compare: $(TARGET_R2) $(TARGET_FFTW)
+	@echo "=== Radix-2 vs FFTW 결과 대조 시작 ==="
+	@./$(TARGET_R2) > out_r2.txt
+	@./$(TARGET_FFTW) > out_fftw.txt
+	@sed '1d' out_r2.txt > c2.txt
+	@sed '1d' out_fftw.txt > f.txt
+	@if diff -q c2.txt f.txt >/dev/null; then \
+		echo "[PASS] OK: Radix-2 커스텀 == FFTW (헤더 줄 제외 동일)"; \
+	else \
+		echo "[FAIL] DIFF 발견:"; \
+		diff c2.txt f.txt; \
+	fi
+	@rm -f out_r2.txt out_fftw.txt c2.txt f.txt
 
 clean:
-	rm -f $(TARGET_CUSTOM) $(TARGET_FFTW) $(TARGET_CUSTOM).exe $(TARGET_FFTW).exe \
-	      out_custom.txt out_fftw.txt
+	rm -f $(TARGET_R2) $(TARGET_R4) $(TARGET_FFTW) *.exe out_*.txt c2.txt f.txt
+

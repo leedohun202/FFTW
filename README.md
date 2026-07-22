@@ -1,12 +1,25 @@
-## 코드 특징
+## 코드 특징 (2의 승수 전용)
 
-FFT/ : real과 imaginary 2개의 float array를 input으로 받는 radix-2 FFT 코드.
-FFT_RADIX4/ : real과 imaginary 2개의 float array를 input으로 받는 radix-4 FFT 코드.
 Globals/ : FFT에 사용될 global parameter를 정의하고 초기화. 각 샘플 크기에 따른 FFT 코드에 사용될 bit reversal과 삼각함수 LUT를 맨 처음에 한꺼번에 만든다.
 
-float[2]인 input fftwf_complex를 바로 사용하지는 못하고, FFT/와 FFT_RADIX4/의 코드 특성상 fftwf_complex를 real과 imag로 변환하고 custom fft에 넣고 돌렸다가 다시 합치게 된다.
+이전 custom FFT코드의 문제점: float[2]인 input fftwf_complex를 바로 사용하지 못하고 real과 imag로 변환한 뒤 FFT를 하고 다시 합쳐야 했음 -> 메모리 버퍼 많이 사용
 
-속도는 fftw에 비해 느려졌지만 일단 기존 코드와 호환이 되며, 정확도는 그대로이다.
+현재 custom FFT코드는 run_r2c_batched와 run_c2c_batched에서 사용되는 fftwf_complex 변수 2개를 인자로 받아 FFT를 진행. 메모리 버퍼 사용 문제에서 벗어났음.
+
+custom_fft_all_radix2.c : radix-2 알고리즘을 사용한 FFT 코드를 sample의 크기(2^n)에 따라 곧바로 생성할 수 있는 매크로 함수로, custom_fft_*_radix2_fused 함수를 생성한다.
+
+custom_fft_*_radix2_fused: memcpy와 in-place bitrev 루프를 완전 제거하고, in 버퍼의 bitrev  위치에서 바로 읽어와 Radix-2 연산 후 out 버퍼에 순차 저장. 그 후의 loop 역시 radix-2 연산
+
+custom_fft_all_radix4.c : radix-4 알고리즘을 사용한 FFT 코드를 sample의 크기(2*4^n or 4^n)에 따라 곧바로 생성할 수 있는 매크로 함수로, custom_fft_*_radix4_fused 함수(2048, 512, 128, 32) 혹은 custom_fft_*_radix4 함수(4096, 1024, 256, 64, 16)를 생성한다.
+
+custom_fft_*_radix4_fused : memcpy와 in-place bitrev 루프를 완전 제거하고, in 버퍼의 bitrev  위치에서 바로 읽어와 Radix-2 연산 후 out 버퍼에 순차 저장. 그 후의 loop은 radix-4 연산
+
+custom_fft_*_radix4: 순수한 radix-4 연산.
+
+
+기존 코드와의 호환 여부만을 먼저 고려했던 이전의 custom fft 코드와는 다르게, 이번에는 동일한 정확도를 보장하는 선에서 processing time의 단축과 메모리 사용량을 줄이는 방안을 고려하였다.
+
+
 
 # FFT 데모 — FFTW 대체 커스텀 FFT (빌드·실행 가능)
 
@@ -20,7 +33,9 @@ float[2]인 input fftwf_complex를 바로 사용하지는 못하고, FFT/와 FFT
 ## 빠른 시작
 
 ```bash
-make run       # 커스텀 myfft 로 빌드+실행 (외부 의존성 없음)
+make run-r2       # 커스텀 myfft_radix2 로 빌드+실행 (외부 의존성 없음)
+make run-r4       # 커스텀 myfft_radix4 로 빌드+실행 (외부 의존성 없음)
+make run-fftw     # fftw 로 빌드+실행 (외부 의존성)
 ```
 
 기대 출력(검증 완료):
@@ -63,9 +78,10 @@ make run       # 커스텀 myfft 로 빌드+실행 (외부 의존성 없음)
 같은 `demo.c` 가 백엔드만 바꿔 빌드됩니다 (`fft_backend.h` 가 스위치).
 
 ```bash
-make            # 커스텀 myfft            → ./fft_demo
+make r2
+make r4
 make fftw       # 실제 libfftw3f (레퍼런스) → ./fft_demo_fftw   (FFTW 설치 필요)
-make compare    # 두 백엔드 실행 결과 diff (헤더 줄 제외 동일해야 정상)
+make compare    # 두 백엔드(r2, fftw) 실행 결과 diff (헤더 줄 제외 동일해야 정상)
 ```
 
 > `make fftw` 는 `libfftw3f`, `libfftw3f_threads` 가 필요합니다

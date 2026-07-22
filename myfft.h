@@ -4,6 +4,7 @@
  * 목적: 
  * 1. 소스의 #include <fftw3.h> 를 #include "myfft.h" 로만 바꾸어 FFTW 종속성을 제거.
  * 2. 레이더 파이프라인의 전역 물리 상수, LUT, NEON 가속 커널 선언을 통합 관리.
+ * 3. Interleaved (AoS) 메모리 레이아웃(fftwf_complex) 적용을 통한 캐시 최적화.
  * -----------------------------------------------------------------------------
  */
 #ifndef MYFFT_H
@@ -13,9 +14,9 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h> 
-#include <sys/time.h> // processing time 측정을 위한 헤더
-#include <sys/resource.h> // 메모리 사용량 측정을 위한 헤더
-#include <omp.h> // OpenMP 병렬처리를 위한 헤더(삭제해도 무방)
+#include <sys/time.h>
+#include <sys/resource.h> 
+#include <omp.h>
 #include <malloc.h>
 #include <unistd.h>
 #include <stddef.h>   /* size_t */
@@ -29,52 +30,33 @@ extern "C" {
 #endif
 
 /* =========================================================================
+ * [공통 타입 정의] FFTW3 호환 메모리 레이아웃
+ * ========================================================================= */
+/* FFTW와 동일한 메모리 레이아웃(하드 계약). LUT 및 커널에서 사용하기 위해 최상단 선언 */
+typedef float myfft_complex[2];
+typedef myfft_complex fftwf_complex;      /* 호출부 호환용 별칭 */
+
+
+/* =========================================================================
  * [PART 1] 레이더 파이프라인 전역 설정 (from radar_config.h)
  * ========================================================================= */
-
-/* 레이더 파이프라인 상수 (demo에선 사용되지 않음)
-#define PI 3.14159265358979323846  
-#define N_ANTENNAS  8  
-#define TILE_SIZE   16    
-*/
-
-
-/* 전역 물리 상수
-extern const double c; 
-extern const double fc; 
-extern const double B; 
-extern const double Tc; 
-extern const double Fs; 
-extern const double S; 
-extern const double lambda_c; 
-extern const double d_ant;
-*/
 
 // 전역 룩업 테이블(LUT) 및 윈도우 배열 선언
 extern int bitrev_4096[4096]; extern int bitrev_2048[2048]; extern int bitrev_1024[1024]; 
 extern int bitrev_512[512];   extern int bitrev_256[256];   extern int bitrev_128[128];   
-extern int bitrev_64[64];     extern int bitrev_16[16];
+extern int bitrev_64[64];     extern int bitrev_32[32]; extern int bitrev_16[16];
 
-// FLOAT 전용 Twiddle Factor 및 Window 테이블 (Butterfly 연산 절반 크기 N/2)
-extern float twiddle_real_4096[2048]; extern float twiddle_imag_4096[2048];
-extern float twiddle_real_2048[1024]; extern float twiddle_imag_2048[1024];
-extern float twiddle_real_1024[512];  extern float twiddle_imag_1024[512];
-extern float twiddle_real_512[256];   extern float twiddle_imag_512[256];
-extern float twiddle_real_256[128];   extern float twiddle_imag_256[128];
-extern float twiddle_real_128[64];    extern float twiddle_imag_128[64];
-extern float twiddle_real_64[32];     extern float twiddle_imag_64[32];
-extern float twiddle_real_16[8];      extern float twiddle_imag_16[8];
+// [변경점] 복소수형(Interleaved) Twiddle Factor 테이블 (나비 연산 절반 크기 N/2)
+extern fftwf_complex twiddle_4096[2048];
+extern fftwf_complex twiddle_2048[1024];
+extern fftwf_complex twiddle_1024[512];
+extern fftwf_complex twiddle_512[256];
+extern fftwf_complex twiddle_256[128];
+extern fftwf_complex twiddle_128[64];
+extern fftwf_complex twiddle_64[32];
+extern fftwf_complex twiddle_32[16];
+extern fftwf_complex twiddle_16[8];
 
-/* (window 함수가 기존 코드에 존재할 경우 삭제해도 무방)
-extern float win_4096[4096];
-extern float win_2048[2048];
-extern float win_1024[1024];
-extern float win_512[512];
-extern float win_256[256];
-extern float win_128[128];
-extern float win_64[64];
-extern float win_16[16];
-*/
 
 // 리소스 초기화 함수
 void init_resources();
@@ -83,34 +65,36 @@ void init_resources();
  * [PART 2] 하드웨어 가속 FFT 커널 선언 (from radar_fft.h)
  * ========================================================================= */
 
-// 🔹 [GROUP 1] 순수 Float 기반 Radix-2 / NEON 가속 커널
-void custom_fft_4096_fixed(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_2048_fixed(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_1024_fixed(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_512_fixed(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_256_fixed(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_128_fixed(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_64_fixed(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_16_fixed(float *__restrict__ real, float *__restrict__ imag);
+// 🔹 [GROUP 1] 순수 Float 기반 Radix-2 / NEON 가속 커널 (단일 포인터로 변경)
 
-// 🔹 [GROUP 2] 순수 Float 기반 Radix-4 / NEON 가속 커널
-void custom_fft_4096_radix4(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_2048_radix4(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_1024_radix4(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_512_radix4(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_256_radix4(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_128_radix4(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_64_radix4(float *__restrict__ real, float *__restrict__ imag);
-void custom_fft_16_radix4(float *__restrict__ real, float *__restrict__ imag);
+void custom_fft_4096_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_2048_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_1024_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_512_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_256_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_128_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_64_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_32_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_16_radix2_fused(const fftwf_complex *in, fftwf_complex *out);
+
+
+// 🔹 [GROUP 2] 순수 Float 기반 Radix-4 / NEON 가속 커널 (단일 포인터로 변경)
+void custom_fft_4096_radix4(fftwf_complex *__restrict__ data);
+void custom_fft_1024_radix4(fftwf_complex *__restrict__ data);
+void custom_fft_256_radix4(fftwf_complex *__restrict__ data);
+void custom_fft_64_radix4(fftwf_complex *__restrict__ data);
+void custom_fft_16_radix4(fftwf_complex *__restrict__ data);
+
+// MIXED 시리즈 (32, 128, 512, 2048) - 2개 파라미터 (Fused in/out)
+void custom_fft_32_radix4_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_128_radix4_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_512_radix4_fused(const fftwf_complex *in, fftwf_complex *out);
+void custom_fft_2048_radix4_fused(const fftwf_complex *in, fftwf_complex *out);
 
 
 /* =========================================================================
  * [PART 3] FFTW3 호환 Shim API (from myfft.h)
  * ========================================================================= */
-
-/* FFTW와 동일한 메모리 레이아웃(하드 계약). */
-typedef float myfft_complex[2];
-typedef myfft_complex fftwf_complex;      /* 호출부 호환용 별칭 */
 
 /* 불투명 plan 핸들. */
 typedef struct myfft_plan_s* myfft_plan;
